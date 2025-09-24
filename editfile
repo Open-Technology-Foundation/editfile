@@ -525,8 +525,15 @@ edit_file() {
   # Detect file type
   filetype=$(detect_file_type "$filepath")
 
+  # Create descriptive temporary file name based on the file being edited
+  local -- file_basename
+  file_basename=$(basename "$filepath")
+  # Sanitize: limit length and replace problematic characters
+  file_basename="${file_basename:0:50}"  # Limit to 50 chars to avoid overly long names
+  file_basename="${file_basename//[^a-zA-Z0-9._-]/_}"  # Replace special chars with underscore
+
   # Create temporary file in the same directory (for atomic operations)
-  TEMP_FILE=$(mktemp -p "$parent_dir" ".edit_file_XXXXXX.tmp")
+  TEMP_FILE=$(mktemp -p "$parent_dir" ".${file_basename}_XXXXXX.tmp")
 
   # Copy existing file to temp or create empty temp file
   if [[ -e "$filepath" ]]; then
