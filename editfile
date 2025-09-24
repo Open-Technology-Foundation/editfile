@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# editfile - Terminal-based text file editor with validation support
+# editfile - Developer's Text Editor with Built-in Validation
 # A pure bash implementation with minimal external dependencies
 set -euo pipefail
 
@@ -60,6 +60,14 @@ noarg() {
     die 2 "Missing argument for option '$1'"
   fi
   return 0
+}
+
+# Yes/no prompt function
+yn() {
+  local -- reply
+  read -r -n1 -p "$SCRIPT_NAME: ${YELLOW}$1${NC} y/n " reply
+  echo
+  [[ ${reply,,} == y ]]
 }
 
 # --------------------------------------------------------------------------------
@@ -135,12 +143,41 @@ is_text_file() {
   # New files are considered text
   [[ ! -e "$filepath" ]] && return 0
 
-  # Check for null bytes in first 4096 bytes
-  if head -c 4096 "$filepath" 2>/dev/null | od -An -tx1 | grep -q ' 00'; then
-    return 1
+  # Use file command as primary check
+  local -- file_info
+  file_info=$(file -b "$filepath" 2>/dev/null)
+
+  # Check if file command identifies it as text or script
+  if [[ "$file_info" == *"text"* ]] || [[ "$file_info" == *"script"* ]]; then
+    return 0  # It's text
   fi
 
-  return 0
+  # Check if it's an executable (ELF, Mach-O, etc)
+  if [[ "$file_info" == *"executable"* ]] || [[ "$file_info" == *"ELF"* ]]; then
+    return 1  # It's binary
+  fi
+
+  # Fallback: check for null bytes directly
+  # Using conditional to avoid set -e issues
+  if head -c 4096 "$filepath" 2>/dev/null | od -An -tx1 | grep -q ' 00' 2>/dev/null; then
+    :  # Has null bytes - continue to return 1
+  else
+    return 0  # No null bytes - it's text
+  fi
+
+  return 1  # Default to binary if we get here
+}
+
+# Find executable in PATH
+find_in_path() {
+  local -- name="$1"
+  local -- path
+  path=$(command -v "$name" 2>/dev/null) || return 0
+
+  # Resolve symlinks to get the actual file
+  if [[ -n "$path" ]]; then
+    readlink -f "$path" 2>/dev/null || echo "$path"
+  fi
 }
 
 # Detect file type based on extension, shebang, or content
@@ -574,7 +611,7 @@ edit_file() {
 
 usage() {
   cat <<EOT
-$SCRIPT_NAME $VERSION - Text file editor with validation
+$SCRIPT_NAME $VERSION - Developer's Text Editor with Built-in Validation
 
 A pure bash implementation with minimal external dependencies.
 
@@ -588,6 +625,12 @@ Options:
   -V|--version          Show version information and exit
   -h|--help             Display this help
 
+Features:
+  • PATH search: If filename not found, searches PATH for executables
+  • Symlink resolution: Automatically resolves symlinks to actual files
+  • Binary protection: Refuses to edit binary executables
+  • Atomic operations: Uses temporary files for safe editing
+
 Supported file types for validation:
   JSON, YAML, XML, HTML, Python, Shell scripts, PHP, INI, CSV, TOML, Markdown
 
@@ -596,6 +639,8 @@ Examples:
   $SCRIPT_NAME -n script.sh              # Edit shell script without validation
   $SCRIPT_NAME -l 42 config.json         # Edit JSON file starting at line 42
   $SCRIPT_NAME -s deploy.sh              # Edit shell script and run shellcheck
+  $SCRIPT_NAME cln                       # Search PATH and edit the cln script
+  $SCRIPT_NAME nginx.conf                # Edit or create nginx.conf in current dir
 
 Environment Variables:
   EDITOR        Text editor to use (defaults to available system editor)
@@ -629,19 +674,42 @@ main() {
   # Get editor
   get_editor
 
-  # Resolve filename path
+  # Check if file exists or search in PATH (before resolving path)
+  if [[ ! -e "$FILENAME" ]]; then
+    local -- exec_path reply
+
+    # If no directory separator, try to find in PATH
+    if [[ "$FILENAME" != */* ]]; then
+      exec_path=$(find_in_path "$FILENAME")
+
+      if [[ -n "$exec_path" ]]; then
+        # Found in PATH - check if it's a text file
+        if is_text_file "$exec_path"; then
+          if yn "Edit executable '$exec_path'?"; then
+            FILENAME="$exec_path"
+          else
+            exit 0
+          fi
+        else
+          error "'$exec_path' is a binary file"
+          exit 1
+        fi
+      else
+        # Not found in PATH - offer to create
+        yn "Create '$FILENAME'?" || exit 0
+      fi
+    else
+      # Contains path separator - just offer to create
+      yn "Create '$FILENAME'?" || exit 0
+    fi
+  fi
+
+  # Now resolve the filename path
   FILENAME=$(readlink -f "$FILENAME" 2>/dev/null || realpath "$FILENAME" 2>/dev/null || echo "$FILENAME")
 
   # Prevent editing the script itself while it's running
   if [[ "$FILENAME" == "$SCRIPT_PATH" ]]; then
     die 1 'Cannot edit the running script itself.' 'This could cause corruption during atomic file replacement.'
-  fi
-
-  # Check if file exists or prompt to create
-  if [[ ! -e "$FILENAME" ]]; then
-    local -- reply
-    read -r -p "Create '$FILENAME'? (y/n) " reply
-    [[ ${reply,,} == y ]] || exit 0
   fi
 
   # Edit the file

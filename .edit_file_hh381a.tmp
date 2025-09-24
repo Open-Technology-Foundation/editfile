@@ -1,6 +1,6 @@
-# editfile - Developer's Text Editor with Built-in Validation
+# editfile - Text Editor with Validation
 
-A terminal-based text editor designed for developers, featuring automatic syntax validation, PATH search, and safe file operations. Pure bash implementation with minimal external dependencies.
+A terminal-based text file editor with built-in validation support. Pure bash implementation with minimal external dependencies.
 
 ## Features
 
