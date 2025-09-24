@@ -1,4 +1,4 @@
-# editfile
+# editfile - Text Editor with Validation
 
 A terminal-based text file editor with built-in validation support. Pure bash implementation with minimal external dependencies.
 
