@@ -632,6 +632,11 @@ main() {
   # Resolve filename path
   FILENAME=$(readlink -f "$FILENAME" 2>/dev/null || realpath "$FILENAME" 2>/dev/null || echo "$FILENAME")
 
+  # Prevent editing the script itself while it's running
+  if [[ "$FILENAME" == "$SCRIPT_PATH" ]]; then
+    die 1 'Cannot edit the running script itself.' 'This could cause corruption during atomic file replacement.'
+  fi
+
   # Check if file exists or prompt to create
   if [[ ! -e "$FILENAME" ]]; then
     local -- reply

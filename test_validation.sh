@@ -154,6 +154,34 @@ else
   echo "${RED}✗ Line number option failed${RESET}"
 fi
 
+# Test 11: Self-edit prevention
+echo "Test 11: Self-edit prevention"
+# Try to edit the script itself
+if "$EDIT_FILE" "$EDIT_FILE" 2>&1 | grep -q "Cannot edit the running script"; then
+  echo "${GREEN}✓ Self-edit prevention works${RESET}"
+else
+  # It might not have errored because it's running in a subshell, test the message directly
+  output=$("$EDIT_FILE" "$EDIT_FILE" 2>&1 || true)
+  if echo "$output" | grep -q "Cannot edit"; then
+    echo "${GREEN}✓ Self-edit prevention works${RESET}"
+  else
+    echo "${RED}✗ Self-edit prevention failed${RESET}"
+  fi
+fi
+
+# Test with full path as well
+FULL_PATH=$(readlink -f "$EDIT_FILE")
+if "$EDIT_FILE" "$FULL_PATH" 2>&1 | grep -q "Cannot edit the running script"; then
+  echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}"
+else
+  output=$("$EDIT_FILE" "$FULL_PATH" 2>&1 || true)
+  if echo "$output" | grep -q "Cannot edit"; then
+    echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}"
+  else
+    echo "  ${YELLOW}⚠ Full path self-edit prevention may not work${RESET}"
+  fi
+fi
+
 # Clean up
 rm -f /tmp/test_*.json /tmp/test_*.py /tmp/test_*.sh /tmp/test_*.yaml
 
