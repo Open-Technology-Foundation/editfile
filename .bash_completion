@@ -1,7 +1,7 @@
 #!/bin/bash
-# Bash completion for edit_file.sh
+# Bash completion for editfile script
 
-_editfile_sh() {
+_editfile() {
   local cur prev opts
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -10,27 +10,45 @@ _editfile_sh() {
   # Available options
   opts="-n --no-validate -l --line -s --shellcheck -V --version -h --help"
 
+  # Handle options that require arguments
   case "${prev}" in
     -l|--line)
-      # Complete with line numbers - just return empty to allow user input
+      # Complete with line numbers (1-999)
+      COMPREPLY=( $(compgen -W "1 10 20 50 100" -- ${cur}) )
       return 0
       ;;
-    *)
-      case "${cur}" in
-        -*)
-          # Complete options
-          COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
-          return 0
-          ;;
-        *)
-          # Complete filenames
-          COMPREPLY=( $(compgen -f -- ${cur}) )
-          return 0
-          ;;
-      esac
-      ;;
   esac
+
+  # Handle option completion
+  if [[ ${cur} == -* ]]; then
+    COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+    return 0
+  fi
+
+  # File completion for filenames
+  # Prioritize text file extensions
+  local text_extensions="*.txt *.md *.json *.yaml *.yml *.xml *.html *.htm *.py *.sh *.bash *.php *.ini *.conf *.cfg *.csv *.toml *.c *.h"
+
+  # Complete with files, prioritizing text files
+  local files=$(compgen -f -- "${cur}")
+  local text_files=""
+  local other_files=""
+
+  for file in $files; do
+    if [[ -d "$file" ]]; then
+      other_files="$other_files $file/"
+    elif [[ "$file" =~ \.(txt|md|json|yaml|yml|xml|html|htm|py|sh|bash|php|ini|conf|cfg|csv|toml|c|h)$ ]]; then
+      text_files="$text_files $file"
+    else
+      other_files="$other_files $file"
+    fi
+  done
+
+  COMPREPLY=( $(compgen -W "$text_files $other_files" -- ${cur}) )
+  return 0
 }
 
-# Register completion function
-complete -F _editfile_sh editfile
+# Register the completion function
+complete -F _editfile editfile
+
+#fin
