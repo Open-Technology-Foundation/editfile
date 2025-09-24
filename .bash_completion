@@ -1,0 +1,36 @@
+#!/bin/bash
+# Bash completion for edit_file.sh
+
+_editfile_sh() {
+  local cur prev opts
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  # Available options
+  opts="-n --no-validate -l --line -s --shellcheck -V --version -h --help"
+
+  case "${prev}" in
+    -l|--line)
+      # Complete with line numbers - just return empty to allow user input
+      return 0
+      ;;
+    *)
+      case "${cur}" in
+        -*)
+          # Complete options
+          COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+          return 0
+          ;;
+        *)
+          # Complete filenames
+          COMPREPLY=( $(compgen -f -- ${cur}) )
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# Register completion function
+complete -F _editfile_sh editfile

@@ -1,0 +1,648 @@
+#!/usr/bin/env bash
+# editfile - Terminal-based text file editor with validation support
+# A pure bash implementation with minimal external dependencies
+set -euo pipefail
+
+# Recommended shopt settings
+shopt -s inherit_errexit shift_verbose extglob nullglob
+
+# Script metadata
+readonly -- VERSION='1.0.0'
+#shellcheck disable=SC2155
+readonly -- SCRIPT_PATH="$(readlink -en -- "$0")"
+readonly -- SCRIPT_NAME="${SCRIPT_PATH##*/}"
+
+# Global variable declarations
+declare -ig VALIDATE=1
+declare -ig LINE_NUM=0
+declare -ig SHELLCHECK=0
+declare -g  EDITOR_PATH=''
+declare -g  FILENAME=''
+
+# Color definitions (if terminal output)
+if [[ -t 1 && -t 2 ]]; then
+  declare -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
+else
+  declare -- RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
+readonly -- RED GREEN YELLOW CYAN NC
+
+# --------------------------------------------------------------------------------
+# UTILITY FUNCTIONS
+# --------------------------------------------------------------------------------
+
+# Core message function using FUNCNAME for context
+_msg() {
+  local -- prefix="$SCRIPT_NAME:" msg
+  case "${FUNCNAME[1]}" in
+    success) prefix+=" ${GREEN}✓${NC}" ;;
+    warn)    prefix+=" ${YELLOW}⚠${NC}" ;;
+    info)    prefix+=" ${CYAN}◉${NC}" ;;
+    error)   prefix+=" ${RED}✗${NC}" ;;
+    *)       ;;
+  esac
+  for msg in "$@"; do printf '%s %s\n' "$prefix" "$msg"; done
+}
+
+# Conditional output based on verbosity
+vecho() { _msg "$@"; }
+success() { >&2 _msg "$@"; }
+warn() { >&2 _msg "$@"; }
+info() { >&2 _msg "$@"; }
+
+# Unconditional output
+error() { >&2 _msg "$@"; }
+die() { (($# > 1)) && error "${@:2}"; exit "${1:-0}"; }
+
+# Validate argument presence
+noarg() {
+  if (($# < 2)) || [[ ${2:0:1} == '-' ]]; then
+    die 2 "Missing argument for option '$1'"
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------------------------
+# CLEANUP AND ERROR HANDLING
+# --------------------------------------------------------------------------------
+
+cleanup() {
+  local -i exitcode=${1:-0}
+  # Remove any temporary files if they exist
+  [[ -n "${TEMP_FILE:-}" ]] && [[ -f "$TEMP_FILE" ]] && rm -f "$TEMP_FILE"
+  exit "$exitcode"
+}
+
+trap 'cleanup $?' SIGINT SIGTERM EXIT
+
+# --------------------------------------------------------------------------------
+# EDITOR DETECTION
+# --------------------------------------------------------------------------------
+
+# Find an editor in PATH and common locations
+find_editor() {
+  local -- editor="$1"
+
+  # Check if it's in PATH
+  if command -v "$editor" >/dev/null 2>&1; then
+    command -v "$editor"
+    return 0
+  fi
+
+  # Check common locations
+  local -a paths=(/usr/bin /usr/local/bin /bin /snap/bin)
+  local -- path
+  for path in "${paths[@]}"; do
+    if [[ -x "$path/$editor" ]]; then
+      echo "$path/$editor"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Get available text editor
+get_editor() {
+  # Check EDITOR environment variable first
+  if [[ -n "${EDITOR:-}" ]]; then
+    if EDITOR_PATH=$(find_editor "$EDITOR"); then
+      return 0
+    fi
+  fi
+
+  # Try preferred editors in order
+  local -a editors=(joe nano vim vi mcedit ne micro emacs jed gedit)
+  local -- editor
+  for editor in "${editors[@]}"; do
+    if EDITOR_PATH=$(find_editor "$editor"); then
+      [[ -n "${EDITOR:-}" ]] || export EDITOR="$editor"
+      return 0
+    fi
+  done
+
+  die 1 'No suitable text editor found.' 'Please install one or set EDITOR environment variable.'
+}
+
+# --------------------------------------------------------------------------------
+# FILE TYPE DETECTION
+# --------------------------------------------------------------------------------
+
+# Check if file is a text file (not binary)
+is_text_file() {
+  local -- filepath="$1"
+
+  # New files are considered text
+  [[ ! -e "$filepath" ]] && return 0
+
+  # Check for null bytes in first 4096 bytes
+  if head -c 4096 "$filepath" 2>/dev/null | od -An -tx1 | grep -q ' 00'; then
+    return 1
+  fi
+
+  return 0
+}
+
+# Detect file type based on extension, shebang, or content
+detect_file_type() {
+  local -- filepath="$1"
+  local -- extension="${filepath##*.}"
+  extension="${extension,,}"  # lowercase
+
+  # Extension-based detection
+  case "$extension" in
+    sh|bash|zsh|ksh) echo shell; return ;;
+    py|pyw|pyi) echo python; return ;;
+    php|php3|php4|php5|php7|phtml) echo php; return ;;
+    json|jsonld) echo json; return ;;
+    yaml|yml) echo yaml; return ;;
+    xml|xsl|xslt|svg) echo xml; return ;;
+    html|htm|xhtml) echo html; return ;;
+    ini|conf|cfg|config) echo ini; return ;;
+    csv|tsv) echo csv; return ;;
+    toml|tml) echo toml; return ;;
+    md|markdown|mdown) echo markdown; return ;;
+    c|h) echo c; return ;;
+    txt) echo text; return ;;
+  esac
+
+  # If file doesn't exist yet, default to text
+  [[ ! -e "$filepath" ]] && echo text && return
+
+  # Shebang detection
+  if [[ -r "$filepath" ]]; then
+    local -- first_line
+    first_line=$(head -n1 "$filepath" 2>/dev/null || true)
+
+    case "$first_line" in
+      "#!/bin/bash"*|"#!/usr/bin/bash"*|"#!/usr/bin/env bash"*) echo "shell"; return ;;
+      "#!/bin/sh"*|"#!/usr/bin/sh"*|"#!/usr/bin/env sh"*) echo "shell"; return ;;
+      "#!/usr/bin/python"*|"#!/usr/bin/env python"*) echo "python"; return ;;
+      "#!/usr/bin/php"*|"#!/usr/bin/env php"*) echo "php"; return ;;
+      "<?php"*|"<?"*) echo "php"; return ;;
+    esac
+  fi
+
+  # Use file command if available
+  if command -v file >/dev/null 2>&1 && [[ -e "$filepath" ]]; then
+    local -- file_output
+    file_output=$(file -b "$filepath" 2>/dev/null || true)
+
+    case "$file_output" in
+      *"shell script"*) echo shell; return ;;
+      *"Python script"*) echo python; return ;;
+      *"PHP script"*) echo php; return ;;
+      *"JSON"*) echo json; return ;;
+      *"XML"*|*"HTML"*) echo xml; return ;;
+    esac
+  fi
+
+  echo text
+}
+
+# --------------------------------------------------------------------------------
+# VALIDATORS
+# --------------------------------------------------------------------------------
+
+# JSON validation
+validate_json() {
+  local -- filepath="$1"
+
+  # Try jq first (fastest and most reliable)
+  if command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$filepath" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  # Fallback to Python
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -m json.tool "$filepath" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  warn 'No JSON validator available' '(install jq or python3)'
+  return 0  # Don't fail if no validator available
+}
+
+# YAML validation
+validate_yaml() {
+  local -- filepath="$1"
+
+  # Try yamllint first
+  if command -v yamllint >/dev/null 2>&1; then
+    if ! yamllint "$filepath" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  # Fallback to Python with PyYAML
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c "import yaml; yaml.safe_load(open('$filepath'))" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  warn 'No YAML validator available' '(install yamllint or python3 with PyYAML)'
+  return 0
+}
+
+# XML validation
+validate_xml() {
+  local -- filepath="$1"
+
+  # Try xmllint first
+  if command -v xmllint >/dev/null 2>&1; then
+    if ! xmllint --noout "$filepath" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  # Fallback to Python
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c "import xml.etree.ElementTree as ET; ET.parse('$filepath')" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  warn 'No XML validator available' '(install xmllint or python3)'
+  return 0
+}
+
+# Python validation
+validate_python() {
+  local -- filepath="$1"
+
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -m py_compile "$filepath" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  warn 'Python3 not available for validation'
+  return 0
+}
+
+# Shell script validation
+validate_shell() {
+  local -- filepath="$1"
+
+  # Basic syntax check with bash -n
+  if ! bash -n "$filepath" 2>&1; then
+    return 1
+  fi
+
+  # Run shellcheck if requested and available
+  if ((SHELLCHECK)) && command -v shellcheck >/dev/null 2>&1; then
+    info 'Running shellcheck...'
+    local -- shellcheck_output
+    shellcheck_output=$(shellcheck "$filepath" 2>&1 || true)
+    if [[ -n "$shellcheck_output" ]]; then
+      warn 'Shellcheck issues:'
+      echo "$shellcheck_output"
+    fi
+  fi
+
+  return 0
+}
+
+# PHP validation
+validate_php() {
+  local -- filepath="$1"
+
+  if command -v php >/dev/null 2>&1; then
+    if ! php -l "$filepath" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  warn 'PHP not available for validation'
+  return 0
+}
+
+# HTML validation (basic)
+validate_html() {
+  local -- filepath="$1"
+
+  # Try tidy if available
+  if command -v tidy >/dev/null 2>&1; then
+    # tidy returns non-zero for warnings, so we just check for errors
+    if ! tidy -errors -q "$filepath" 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  # Basic check: ensure it's valid UTF-8 and has some HTML-like content
+  if file "$filepath" 2>/dev/null | grep -q "HTML\|XML\|text"; then
+    return 0
+  fi
+
+  return 0
+}
+
+# INI validation (basic)
+validate_ini() {
+  local -- filepath="$1"
+
+  # Basic INI validation with awk
+  awk '
+    BEGIN { valid=1 }
+    /^[[:space:]]*$/ { next }  # Skip empty lines
+    /^[[:space:]]*[#;]/ { next }  # Skip comments
+    /^[[:space:]]*\[.*\][[:space:]]*$/ { next }  # Section headers
+    /^[[:space:]]*[^=]+=.*$/ { next }  # Key=value pairs
+    { valid=0; exit 1 }  # Invalid line
+  ' "$filepath" 2>/dev/null
+
+  return $?
+}
+
+# CSV validation (check column consistency)
+validate_csv() {
+  local -- filepath="$1"
+
+  # Use awk to check column count consistency
+  awk -F',' '
+    NR==1 { cols=NF; next }
+    NF != cols {
+      print "Line " NR ": Expected " cols " columns, found " NF
+      exit 1
+    }
+  ' "$filepath" 2>&1
+
+  return $?
+}
+
+# TOML validation
+validate_toml() {
+  local -- filepath="$1"
+
+  # Try Python with tomli/toml
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c "
+try:
+    import tomli as toml
+except ImportError:
+    try:
+        import toml
+    except ImportError:
+        exit(2)
+with open('$filepath', 'rb' if 'tomli' in dir() else 'r') as f:
+    toml.load(f)
+" 2>&1; then
+      return 0
+    elif [[ $? -eq 2 ]]; then
+      warn 'No TOML parser available' '(install python3 with tomli or toml)'
+      return 0
+    else
+      return 1
+    fi
+  fi
+
+  warn 'Python3 not available for TOML validation'
+  return 0
+}
+
+# Markdown validation (basic)
+validate_markdown() {
+  # Markdown rarely has syntax errors, just check if readable
+  return 0
+}
+
+# Main validation dispatcher
+validate_file() {
+  local -- filepath="$1"
+  local -- filetype="$2"
+
+  info "Validating $filetype file '$filepath'"
+
+  local -- output
+  case "$filetype" in
+    json) output=$(validate_json "$filepath" 2>&1) ;;
+    yaml) output=$(validate_yaml "$filepath" 2>&1) ;;
+    xml|html) output=$(validate_xml "$filepath" 2>&1) ;;
+    python) output=$(validate_python "$filepath" 2>&1) ;;
+    shell) output=$(validate_shell "$filepath" 2>&1) ;;
+    php) output=$(validate_php "$filepath" 2>&1) ;;
+    ini) output=$(validate_ini "$filepath" 2>&1) ;;
+    csv) output=$(validate_csv "$filepath" 2>&1) ;;
+    toml) output=$(validate_toml "$filepath" 2>&1) ;;
+    markdown|text|c) return 0 ;;  # No validation needed
+    *) return 0 ;;
+  esac
+
+  local -i exit_code=$?
+
+  if ((exit_code != 0)); then
+    error 'Validation failed:'
+    echo "$output"
+    return 1
+  fi
+
+  success 'Validated'
+  return 0
+}
+
+# --------------------------------------------------------------------------------
+# FILE EDITING
+# --------------------------------------------------------------------------------
+
+# Edit file with validation
+edit_file() {
+  local -- filepath="$1"
+  local -- filetype
+  local -- TEMP_FILE  # Used by cleanup trap
+
+  # Check if it's a text file
+  if ! is_text_file "$filepath"; then
+    die 1 "'$filepath' is a binary file"
+  fi
+
+  # Check write permissions
+  if [[ -e "$filepath" ]] && [[ ! -w "$filepath" ]]; then
+    die 1 "No write permission for '$filepath'"
+  fi
+
+  # Check parent directory permissions for new files
+  local -- parent_dir
+  parent_dir=$(dirname "$filepath")
+  if [[ ! -e "$filepath" ]]; then
+    if [[ ! -d "$parent_dir" ]]; then
+      mkdir -p "$parent_dir" || die 1 "Cannot create parent directory '$parent_dir'"
+    fi
+    if [[ ! -w "$parent_dir" ]]; then
+      die 1 "No write permission for directory '$parent_dir'"
+    fi
+  fi
+
+  # Detect file type
+  filetype=$(detect_file_type "$filepath")
+
+  # Create temporary file in the same directory (for atomic operations)
+  TEMP_FILE=$(mktemp -p "$parent_dir" ".edit_file_XXXXXX.tmp")
+
+  # Copy existing file to temp or create empty temp file
+  if [[ -e "$filepath" ]]; then
+    cp -p "$filepath" "$TEMP_FILE" 2>/dev/null || cp "$filepath" "$TEMP_FILE"
+  else
+    touch "$TEMP_FILE"
+  fi
+
+  # Ensure temp file is writable
+  chmod u+w "$TEMP_FILE"
+
+  # Build editor command
+  local -a editor_cmd=("$EDITOR_PATH")
+  ((LINE_NUM == 0)) || editor_cmd+=("+$LINE_NUM")
+  editor_cmd+=("$TEMP_FILE")
+
+  # Edit loop
+  local -i editing=1
+  while ((editing)); do
+    # Launch editor
+    info "Launching editor '$(basename "$EDITOR_PATH")'"
+    if [[ -t 0 ]] && [[ -t 1 ]]; then
+      "${editor_cmd[@]}"
+    else
+      # Non-interactive mode for testing - skip editor
+      :
+    fi
+
+    # Reset line number after first edit
+    LINE_NUM=0
+    editor_cmd=("$EDITOR_PATH" "$TEMP_FILE")
+
+    # Validate if requested
+    if ((VALIDATE)); then
+      if validate_file "$TEMP_FILE" "$filetype"; then
+        editing=0
+      else
+        # Validation failed - ask user what to do
+        vecho '' 'Options:' \
+          '  [e] - Edit again' \
+          '  [s] - Save anyway (not recommended)' \
+          '  [q] - Quit without saving'
+
+        while true; do
+          local -- choice
+          read -r -p "$SCRIPT_NAME: What would you like to do? [e/s/q]: " choice
+          case "$choice" in
+            e|E)
+              break  # Continue editing
+              ;;
+            s|S)
+              warn 'Saving file despite validation errors...'
+              editing=0
+              break
+              ;;
+            q|Q)
+              vecho 'Quitting without saving.'
+              rm -f "$TEMP_FILE"
+              exit 0
+              ;;
+            *)
+              echo "Invalid choice. Please enter 'e', 's', or 'q'."
+              ;;
+          esac
+        done
+      fi
+    else
+      editing=0
+    fi
+  done
+
+  # Move temp file to final location (atomic operation)
+  mv -f "$TEMP_FILE" "$filepath"
+  TEMP_FILE=""  # Clear so cleanup doesn't remove it
+
+  success "'$filepath' saved"
+}
+
+# --------------------------------------------------------------------------------
+# USAGE DOCUMENTATION
+# --------------------------------------------------------------------------------
+
+usage() {
+  cat <<EOT
+$SCRIPT_NAME $VERSION - Text file editor with validation
+
+A pure bash implementation with minimal external dependencies.
+
+Usage:
+  $SCRIPT_NAME [OPTIONS] filename
+
+Options:
+  -n|--no-validate      Skip validation
+  -l|--line LINE        Start editing at specified line number
+  -s|--shellcheck       Run shellcheck on shell scripts after editing
+  -V|--version          Show version information and exit
+  -h|--help             Display this help
+
+Supported file types for validation:
+  JSON, YAML, XML, HTML, Python, Shell scripts, PHP, INI, CSV, TOML, Markdown
+
+Examples:
+  $SCRIPT_NAME file.py                   # Edit Python file with validation
+  $SCRIPT_NAME -n script.sh              # Edit shell script without validation
+  $SCRIPT_NAME -l 42 config.json         # Edit JSON file starting at line 42
+  $SCRIPT_NAME -s deploy.sh              # Edit shell script and run shellcheck
+
+Environment Variables:
+  EDITOR        Text editor to use (defaults to available system editor)
+
+EOT
+  exit "${1:-0}"
+}
+
+# --------------------------------------------------------------------------------
+# MAIN FUNCTION
+# --------------------------------------------------------------------------------
+
+main() {
+  # Parse command-line arguments
+  while (($#)); do case "$1" in
+    -n|--no-validate)  VALIDATE=0 ;;
+    -l|--line)         noarg "$@"; shift; LINE_NUM="$1" ;;
+    -s|--shellcheck)   SHELLCHECK=1 ;;
+    -V|--version)      echo "$SCRIPT_NAME $VERSION"; exit 0 ;;
+    -h|--help)         usage 0 ;;
+    -[nlsVh]*) #shellcheck disable=SC2046 #split up single options
+                       set -- '' $(printf -- "-%c " $(grep -o . <<<"${1:1}")) "${@:2}" ;;
+    -*)                die 22 "Invalid option '$1'" ;;
+    *)                 [[ -z "$FILENAME" ]] || die 2 'Multiple filenames specified'
+                       FILENAME="$1" ;;
+  esac; shift; done
+
+  # Validate arguments
+  [[ -n "$FILENAME" ]] || die 1 'No filename specified'
+
+  # Get editor
+  get_editor
+
+  # Resolve filename path
+  FILENAME=$(readlink -f "$FILENAME" 2>/dev/null || realpath "$FILENAME" 2>/dev/null || echo "$FILENAME")
+
+  # Check if file exists or prompt to create
+  if [[ ! -e "$FILENAME" ]]; then
+    local -- reply
+    read -r -p "Create '$FILENAME'? (y/n) " reply
+    [[ ${reply,,} == y ]] || exit 0
+  fi
+
+  # Edit the file
+  edit_file "$FILENAME"
+}
+
+# Call main with all arguments
+main "$@"
+#fin

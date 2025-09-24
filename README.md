@@ -1,0 +1,182 @@
+# editfile
+
+A terminal-based text file editor with built-in validation support. Pure bash implementation with minimal external dependencies.
+
+## Features
+
+- **Automatic editor detection** - Finds and uses available text editors (joe, nano, vim, vi, etc.)
+- **Multi-format validation** - Built-in syntax validation for JSON, YAML, XML, Python, Shell scripts, and more
+- **Safe file editing** - Atomic file operations with temporary file handling
+- **Binary file protection** - Prevents accidental editing of binary files
+- **Shellcheck integration** - Optional shell script analysis
+- **Line number support** - Jump directly to specific line numbers
+- **Minimal dependencies** - Core functionality requires only bash and standard Unix tools
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/Open-Technology-Foundation/editfile
+cd editfile
+
+# Make the script executable
+chmod +x editfile
+
+# Optional: Link to a directory in your PATH
+sudo ln -s $(pwd)/editfile /usr/local/bin/editfile
+```
+
+## Usage
+
+```bash
+editfile [OPTIONS] filename
+```
+
+### Options
+
+- `-n`, `--no-validate` - Skip validation
+- `-l`, `--line LINE` - Start editing at specified line number
+- `-s`, `--shellcheck` - Run shellcheck on shell scripts after editing
+- `-V`, `--version` - Show version information and exit
+- `-h`, `--help` - Display help message
+
+### Examples
+
+```bash
+# Edit Python file with validation
+editfile script.py
+
+# Edit shell script without validation
+editfile -n deploy.sh
+
+# Edit JSON file starting at line 42
+editfile -l 42 config.json
+
+# Edit shell script and run shellcheck
+editfile -s install.sh
+
+# Create a new file (will prompt for confirmation)
+editfile newfile.txt
+```
+
+## Supported File Types
+
+File type detection is performed using:
+1. File extension
+2. Shebang line (#!)
+3. Content analysis with `file` command
+
+### Validated File Types
+
+| File Type | Extensions | Validator |
+|-----------|------------|-----------|
+| JSON | .json, .jsonld | jq or python3 |
+| YAML | .yaml, .yml | yamllint or python3 |
+| XML | .xml, .xsl, .xslt, .svg | xmllint or python3 |
+| HTML | .html, .htm, .xhtml | tidy |
+| Python | .py, .pyw, .pyi | python3 |
+| Shell | .sh, .bash, .zsh, .ksh | bash -n, shellcheck |
+| PHP | .php, .phtml | php -l |
+| INI | .ini, .conf, .cfg | awk |
+| CSV | .csv, .tsv | awk |
+| TOML | .toml, .tml | python3 with tomli/toml |
+| Markdown | .md, .markdown | (no validation) |
+
+## Dependencies
+
+### Required
+- bash 4.0+
+- Standard Unix tools (grep, awk, sed, od, file)
+- A text editor (nano, vim, vi, or any editor)
+
+### Optional Validators
+Install these for enhanced validation capabilities:
+
+```bash
+# Ubuntu/Debian
+sudo apt install jq yamllint xmllint shellcheck php-cli tidy
+
+# macOS with Homebrew
+brew install jq yamllint libxml2 shellcheck php tidy-html5
+
+# Fedora/RHEL
+sudo dnf install jq yamllint libxml2 ShellCheck php-cli tidy
+```
+
+### Python Validators
+For Python-based validation:
+
+```bash
+# YAML support
+pip install PyYAML
+
+# TOML support
+pip install tomli  # or toml for older Python
+```
+
+## Editor Selection
+
+The script selects editors in this priority:
+1. `$EDITOR` environment variable
+2. Search for installed editors in order: joe, nano, vim, vi, mcedit, ne, micro, emacs, jed, gedit
+
+To set a preferred editor:
+```bash
+export EDITOR=vim
+```
+
+## How It Works
+
+1. **File Detection** - Determines if file is text or binary
+2. **Type Detection** - Identifies file type from extension, shebang, or content
+3. **Temporary File** - Creates a temporary copy for editing (atomic operations)
+4. **Editor Launch** - Opens the file in detected/configured editor
+5. **Validation** - Runs appropriate validator after editing (if enabled)
+6. **Save or Retry** - On validation failure, offers options to edit again, save anyway, or quit
+7. **Atomic Replace** - Moves temp file to final location
+
+## Error Handling
+
+- **Binary files** - Refuses to edit binary files
+- **Permissions** - Checks write permissions before editing
+- **Validation failures** - Interactive prompt with options to retry or force save
+- **Missing validators** - Gracefully continues with warnings when validators aren't installed
+
+## Environment Variables
+
+- `EDITOR` - Preferred text editor to use
+
+## Compliance
+
+The script follows the [Bash Coding Standard](https://github.com/Open-Technology-Foundation/bash-coding-standard) with:
+- Strict error handling (`set -euo pipefail`)
+- Proper variable declarations and scoping
+- Consistent 2-space indentation
+- Comprehensive trap handling
+- ShellCheck compliance
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 - see the [GNU GPL v3](https://www.gnu.org/licenses/gpl-3.0.en.html) for details.
+
+## Contributing
+
+Contributions are welcome! Please ensure:
+- Code follows the bash coding standard
+- ShellCheck passes without errors
+- Validation tests pass
+- Documentation is updated as needed
+
+## Testing
+
+Run the included test suite:
+
+```bash
+./test_validation.sh
+```
+
+The test suite validates:
+- JSON, YAML, Python, Shell script validation
+- Invalid file detection
+- Editor detection fallback
+- Command-line argument parsing
