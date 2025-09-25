@@ -461,7 +461,17 @@ validate_file() {
   local -- filepath="$1"
   local -- filetype="$2"
 
-  info "Validating $filetype file '$filepath'"
+  # Check if this file type has a validator
+  case "$filetype" in
+    json|yaml|xml|html|python|shell|php|ini|csv|toml)
+      # Has a validator - show message and validate
+      info "Validating $filetype file '$filepath'"
+      ;;
+    *)
+      # No validator for this type - skip silently
+      return 0
+      ;;
+  esac
 
   local -- output
   case "$filetype" in
@@ -474,8 +484,6 @@ validate_file() {
     ini) output=$(validate_ini "$filepath" 2>&1) ;;
     csv) output=$(validate_csv "$filepath" 2>&1) ;;
     toml) output=$(validate_toml "$filepath" 2>&1) ;;
-    markdown|text|c) return 0 ;;  # No validation needed
-    *) return 0 ;;
   esac
 
   local -i exit_code=$?
@@ -535,8 +543,15 @@ edit_file() {
   # Create temporary file in the same directory (for atomic operations)
   TEMP_FILE=$(mktemp -p "$parent_dir" ".${file_basename}_XXXXXX.tmp")
 
-  # Copy existing file to temp or create empty temp file
+  # Track if original file existed and create backup for comparison
+  local -i file_existed=0
+  local -- original_backup=""
   if [[ -e "$filepath" ]]; then
+    file_existed=1
+    # Create a backup of original for comparison
+    original_backup=$(mktemp -p "$parent_dir" ".${file_basename}_orig_XXXXXX.tmp")
+    cp -p "$filepath" "$original_backup" 2>/dev/null || cp "$filepath" "$original_backup"
+    # Copy to temp file for editing
     cp -p "$filepath" "$TEMP_FILE" 2>/dev/null || cp "$filepath" "$TEMP_FILE"
   else
     touch "$TEMP_FILE"
@@ -555,18 +570,35 @@ edit_file() {
   while ((editing)); do
     # Launch editor
     info "Launching editor '$(basename "$EDITOR_PATH")'"
-    if [[ -t 0 ]] && [[ -t 1 ]]; then
-      "${editor_cmd[@]}"
-    else
-      # Non-interactive mode for testing - skip editor
-      :
-    fi
+    "${editor_cmd[@]}"
 
     # Reset line number after first edit
     LINE_NUM=0
     editor_cmd=("$EDITOR_PATH" "$TEMP_FILE")
 
-    # Validate if requested
+    # Check if file was actually modified
+    local -i file_changed=0
+    if ((file_existed)); then
+      # For existing files, compare with original backup
+      if ! cmp -s "$original_backup" "$TEMP_FILE"; then
+        file_changed=1
+      fi
+    else
+      # For new files, check if temp file is non-empty
+      if [[ -s "$TEMP_FILE" ]]; then
+        file_changed=1
+      fi
+    fi
+
+    # If no changes were made, exit without validation or saving
+    if ((file_changed == 0)); then
+      info "No changes made to '$filepath'"
+      rm -f "$TEMP_FILE" "$original_backup"
+      TEMP_FILE=""
+      exit 0
+    fi
+
+    # Validate if requested (only if file was changed)
     if ((VALIDATE)); then
       if validate_file "$TEMP_FILE" "$filetype"; then
         editing=0
@@ -591,7 +623,7 @@ edit_file() {
               ;;
             q|Q)
               vecho 'Quitting without saving.'
-              rm -f "$TEMP_FILE"
+              rm -f "$TEMP_FILE" "$original_backup"
               exit 0
               ;;
             *)
@@ -608,6 +640,9 @@ edit_file() {
   # Move temp file to final location (atomic operation)
   mv -f "$TEMP_FILE" "$filepath"
   TEMP_FILE=""  # Clear so cleanup doesn't remove it
+
+  # Clean up backup file
+  [[ -n "$original_backup" ]] && rm -f "$original_backup"
 
   success "'$filepath' saved"
 }
