@@ -488,9 +488,13 @@ validate_file() {
 
   local -i exit_code=$?
 
+  # Always show output if there is any (for shellcheck warnings, etc.)
+  if [[ -n "$output" ]]; then
+    echo "$output"
+  fi
+
   if ((exit_code != 0)); then
     error 'Validation failed:'
-    echo "$output"
     return 1
   fi
 
