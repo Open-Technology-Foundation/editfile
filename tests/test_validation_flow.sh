@@ -3,8 +3,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+readonly SCRIPT_DIR
+
 # Global vars
-declare -ig VALIDATE=1
 declare -ig SHELLCHECK=1  # Simulate -s flag
 
 # Minimal validate_shell function
@@ -39,4 +41,5 @@ validate_shell() {
 # Test it
 echo "Testing with file: test_shellcheck.sh"
 echo "SHELLCHECK variable is: $SHELLCHECK"
-validate_shell "test_shellcheck.sh"
+validate_shell "$SCRIPT_DIR/test_shellcheck.sh"
+#fin

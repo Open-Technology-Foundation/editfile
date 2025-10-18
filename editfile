@@ -2,34 +2,70 @@
 # editfile - Developer's Text Editor with Built-in Validation
 # A pure bash implementation with minimal external dependencies
 set -euo pipefail
-
-# Recommended shopt settings
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script metadata
-readonly -- VERSION='1.0.0'
-#shellcheck disable=SC2155
-readonly -- SCRIPT_PATH="$(readlink -en -- "$0")"
-readonly -- SCRIPT_NAME="${SCRIPT_PATH##*/}"
+VERSION='1.1.0'
+SCRIPT_PATH=$(readlink -en -- "$0")
+SCRIPT_NAME="${SCRIPT_PATH##*/}"
+readonly -- VERSION SCRIPT_PATH SCRIPT_NAME
 
 # Global variable declarations
-declare -ig VALIDATE=1
-declare -ig LINE_NUM=0
-declare -ig SHELLCHECK=0
-declare -g  EDITOR_PATH=''
-declare -g  FILENAME=''
+declare -i VALIDATE=1 LINE_NUM=0 SHELLCHECK=0
+declare -- FILENAME='' TEMP_FILE=''
 
-# Color definitions (if terminal output)
-if [[ -t 1 && -t 2 ]]; then
-  declare -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
-else
-  declare -- RED='' GREEN='' YELLOW='' CYAN='' NC=''
+# --------------------------------------------------------------------------------
+# DEPENDENCY CHECKING
+# --------------------------------------------------------------------------------
+
+# Check for filetype package dependency
+if ! command -v editcmd >/dev/null 2>&1; then
+  >&2 cat <<EOF
+$SCRIPT_NAME: ${RED}error${NC}: editcmd not found
+
+editfile requires the 'filetype' package to be installed.
+
+Quick Install (one-liner):
+  git clone https://github.com/Open-Technology-Foundation/filetype.git && cd filetype && sudo ./install.sh
+
+Or step-by-step:
+  git clone https://github.com/Open-Technology-Foundation/filetype.git
+  cd filetype
+  sudo ./install.sh
+
+This installs editcmd and filetype-lib.sh to /usr/local/bin/
+EOF
+  exit 1
 fi
-readonly -- RED GREEN YELLOW CYAN NC
+
+# Source filetype library for comprehensive file type detection
+readonly FILETYPE_LIB='/usr/local/bin/filetype-lib.sh'
+if [[ ! -r "$FILETYPE_LIB" ]]; then
+  >&2 echo "$RED Error:$NC filetype-lib.sh not found at $FILETYPE_LIB"
+  >&2 echo "Please install the complete filetype package."
+  exit 1
+fi
+
+# shellcheck source=/usr/local/bin/filetype-lib.sh
+source "$FILETYPE_LIB"
+
+# Verify critical functions are available
+if ! declare -F filetype >/dev/null; then
+  >&2 echo "$RED Error:$NC filetype() function not available from filetype-lib.sh"
+  >&2 echo "Please reinstall the filetype package."
+  exit 1
+fi
 
 # --------------------------------------------------------------------------------
 # UTILITY FUNCTIONS
 # --------------------------------------------------------------------------------
+
+# Color definitions (if terminal output)
+if [[ -t 1 && -t 2 ]]; then
+  readonly -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
+else
+  readonly -- RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
 
 # Core message function using FUNCNAME for context
 _msg() {
@@ -54,18 +90,12 @@ info() { >&2 _msg "$@"; }
 error() { >&2 _msg "$@"; }
 die() { (($# > 1)) && error "${@:2}"; exit "${1:-0}"; }
 
-# Validate argument presence
-noarg() {
-  if (($# < 2)) || [[ ${2:0:1} == '-' ]]; then
-    die 2 "Missing argument for option '$1'"
-  fi
-  return 0
-}
+noarg() { (($# > 1)) && [[ ${2:0:1} != '-' ]] || die 2 "Missing argument for option '$1'"; }
 
 # Yes/no prompt function
 yn() {
   local -- reply
-  read -r -n1 -p "$SCRIPT_NAME: ${YELLOW}$1${NC} y/n " reply
+  read -r -n1 -p "$SCRIPT_NAME: $YELLOW$1$NC y/n " reply
   echo
   [[ ${reply,,} == y ]]
 }
@@ -77,164 +107,71 @@ yn() {
 cleanup() {
   local -i exitcode=${1:-0}
   # Remove any temporary files if they exist
-  [[ -n "${TEMP_FILE:-}" ]] && [[ -f "$TEMP_FILE" ]] && rm -f "$TEMP_FILE"
+  [[ -n "$TEMP_FILE" ]] && rm -f "$TEMP_FILE"
   exit "$exitcode"
 }
 
 trap 'cleanup $?' SIGINT SIGTERM EXIT
 
 # --------------------------------------------------------------------------------
-# EDITOR DETECTION
-# --------------------------------------------------------------------------------
-
-# Find an editor in PATH and common locations
-find_editor() {
-  local -- editor="$1"
-
-  # Check if it's in PATH
-  if command -v "$editor" >/dev/null 2>&1; then
-    command -v "$editor"
-    return 0
-  fi
-
-  # Check common locations
-  local -a paths=(/usr/bin /usr/local/bin /bin /snap/bin)
-  local -- path
-  for path in "${paths[@]}"; do
-    if [[ -x "$path/$editor" ]]; then
-      echo "$path/$editor"
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-# Get available text editor
-get_editor() {
-  # Check EDITOR environment variable first
-  if [[ -n "${EDITOR:-}" ]]; then
-    if EDITOR_PATH=$(find_editor "$EDITOR"); then
-      return 0
-    fi
-  fi
-
-  # Try preferred editors in order
-  local -a editors=(joe nano vim vi mcedit ne micro emacs jed gedit)
-  local -- editor
-  for editor in "${editors[@]}"; do
-    if EDITOR_PATH=$(find_editor "$editor"); then
-      [[ -n "${EDITOR:-}" ]] || export EDITOR="$editor"
-      return 0
-    fi
-  done
-
-  die 1 'No suitable text editor found.' 'Please install one or set EDITOR environment variable.'
-}
-
-# --------------------------------------------------------------------------------
 # FILE TYPE DETECTION
 # --------------------------------------------------------------------------------
 
-# Check if file is a text file (not binary)
 is_text_file() {
   local -- filepath="$1"
 
-  # New files are considered text
+  # Nonexistent files will be created, so treat them as editable text
   [[ ! -e "$filepath" ]] && return 0
 
-  # Use file command as primary check
   local -- file_info
   file_info=$(file -b "$filepath" 2>/dev/null)
 
-  # Check if file command identifies it as text or script
+  # Trust file(1) when it identifies text or scripts
   if [[ "$file_info" == *"text"* ]] || [[ "$file_info" == *"script"* ]]; then
-    return 0  # It's text
+    return 0
   fi
 
-  # Check if it's an executable (ELF, Mach-O, etc)
+  # Prevent editing compiled binaries (could corrupt them)
   if [[ "$file_info" == *"executable"* ]] || [[ "$file_info" == *"ELF"* ]]; then
-    return 1  # It's binary
+    return 1
   fi
 
-  # Fallback: check for null bytes directly
-  # Using conditional to avoid set -e issues
+  # When file(1) is ambiguous, check for null bytes to distinguish binary from text
+  # This catches files with misleading extensions or missing magic numbers
   if head -c 4096 "$filepath" 2>/dev/null | od -An -tx1 | grep -q ' 00' 2>/dev/null; then
-    :  # Has null bytes - continue to return 1
+    return 1  # Binary data
   else
-    return 0  # No null bytes - it's text
+    return 0  # Appears to be text
   fi
-
-  return 1  # Default to binary if we get here
 }
 
-# Find executable in PATH
 find_in_path() {
   local -- name="$1"
   local -- path
   path=$(command -v "$name" 2>/dev/null) || return 0
 
-  # Resolve symlinks to get the actual file
+  # Return canonical path so we can check if it's binary or text
+  # Resolving symlinks ensures we check the actual file, not a wrapper script
   if [[ -n "$path" ]]; then
     readlink -f "$path" 2>/dev/null || echo "$path"
   fi
 }
 
 # Detect file type based on extension, shebang, or content
+# Uses filetype() from filetype-lib.sh for comprehensive detection (46+ types, 80+ extensions)
 detect_file_type() {
   local -- filepath="$1"
-  local -- extension="${filepath##*.}"
-  extension="${extension,,}"  # lowercase
+  local -- ft
 
-  # Extension-based detection
-  case "$extension" in
-    sh|bash|zsh|ksh) echo shell; return ;;
-    py|pyw|pyi) echo python; return ;;
-    php|php3|php4|php5|php7|phtml) echo php; return ;;
-    json|jsonld) echo json; return ;;
-    yaml|yml) echo yaml; return ;;
-    xml|xsl|xslt|svg) echo xml; return ;;
-    html|htm|xhtml) echo html; return ;;
-    ini|conf|cfg|config) echo ini; return ;;
-    csv|tsv) echo csv; return ;;
-    toml|tml) echo toml; return ;;
-    md|markdown|mdown) echo markdown; return ;;
-    c|h) echo c; return ;;
-    txt) echo text; return ;;
+  # Use comprehensive filetype detection from library
+  ft=$(filetype "$filepath")
+
+  # Map filetype-lib names to editfile validator names where they differ
+  case "$ft" in
+    sh|bash)  echo 'shell' ;;     # validators expect 'shell' not 'sh'
+    md)       echo 'markdown' ;;  # validators expect 'markdown' not 'md'
+    *)        echo "$ft" ;;       # Most names match (json, yaml, xml, python, php, etc.)
   esac
-
-  # If file doesn't exist yet, default to text
-  [[ ! -e "$filepath" ]] && echo text && return
-
-  # Shebang detection
-  if [[ -r "$filepath" ]]; then
-    local -- first_line
-    first_line=$(head -n1 "$filepath" 2>/dev/null || true)
-
-    case "$first_line" in
-      "#!/bin/bash"*|"#!/usr/bin/bash"*|"#!/usr/bin/env bash"*) echo "shell"; return ;;
-      "#!/bin/sh"*|"#!/usr/bin/sh"*|"#!/usr/bin/env sh"*) echo "shell"; return ;;
-      "#!/usr/bin/python"*|"#!/usr/bin/env python"*) echo "python"; return ;;
-      "#!/usr/bin/php"*|"#!/usr/bin/env php"*) echo "php"; return ;;
-      "<?php"*|"<?"*) echo "php"; return ;;
-    esac
-  fi
-
-  # Use file command if available
-  if command -v file >/dev/null 2>&1 && [[ -e "$filepath" ]]; then
-    local -- file_output
-    file_output=$(file -b "$filepath" 2>/dev/null || true)
-
-    case "$file_output" in
-      *"shell script"*) echo shell; return ;;
-      *"Python script"*) echo python; return ;;
-      *"PHP script"*) echo php; return ;;
-      *"JSON"*) echo json; return ;;
-      *"XML"*|*"HTML"*) echo xml; return ;;
-    esac
-  fi
-
-  echo text
 }
 
 # --------------------------------------------------------------------------------
@@ -279,7 +216,7 @@ validate_yaml() {
 
   # Fallback to Python with PyYAML
   if command -v python3 >/dev/null 2>&1; then
-    if ! python3 -c "import yaml; yaml.safe_load(open('$filepath'))" 2>&1; then
+    if ! python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$filepath" 2>&1; then
       return 1
     fi
     return 0
@@ -303,7 +240,7 @@ validate_xml() {
 
   # Fallback to Python
   if command -v python3 >/dev/null 2>&1; then
-    if ! python3 -c "import xml.etree.ElementTree as ET; ET.parse('$filepath')" 2>&1; then
+    if ! python3 -c "import sys, xml.etree.ElementTree as ET; ET.parse(sys.argv[1])" "$filepath" 2>&1; then
       return 1
     fi
     return 0
@@ -427,6 +364,7 @@ validate_toml() {
   # Try Python with tomli/toml
   if command -v python3 >/dev/null 2>&1; then
     if python3 -c "
+import sys
 try:
     import tomli as toml
 except ImportError:
@@ -434,9 +372,9 @@ except ImportError:
         import toml
     except ImportError:
         exit(2)
-with open('$filepath', 'rb' if 'tomli' in dir() else 'r') as f:
+with open(sys.argv[1], 'rb' if 'tomli' in dir() else 'r') as f:
     toml.load(f)
-" 2>&1; then
+" "$filepath" 2>&1; then
       return 0
     elif [[ $? -eq 2 ]]; then
       warn 'No TOML parser available' '(install python3 with tomli or toml)'
@@ -447,12 +385,6 @@ with open('$filepath', 'rb' if 'tomli' in dir() else 'r') as f:
   fi
 
   warn 'Python3 not available for TOML validation'
-  return 0
-}
-
-# Markdown validation (basic)
-validate_markdown() {
-  # Markdown rarely has syntax errors, just check if readable
   return 0
 }
 
@@ -506,11 +438,9 @@ validate_file() {
 # FILE EDITING
 # --------------------------------------------------------------------------------
 
-# Edit file with validation
 edit_file() {
   local -- filepath="$1"
   local -- filetype
-  local -- TEMP_FILE  # Used by cleanup trap
 
   # Check if it's a text file
   if ! is_text_file "$filepath"; then
@@ -537,64 +467,79 @@ edit_file() {
   # Detect file type
   filetype=$(detect_file_type "$filepath")
 
-  # Create descriptive temporary file name based on the file being edited
-  local -- file_basename
+  # Preserve file extension in temp filename so editcmd's filetype detection works correctly
+  local -- file_basename file_ext file_name_noext
   file_basename=$(basename "$filepath")
-  # Sanitize: limit length and replace problematic characters
-  file_basename="${file_basename:0:50}"  # Limit to 50 chars to avoid overly long names
-  file_basename="${file_basename//[^a-zA-Z0-9._-]/_}"  # Replace special chars with underscore
 
-  # Create temporary file in the same directory (for atomic operations)
-  TEMP_FILE=$(mktemp -p "$parent_dir" ".${file_basename}_XXXXXX.tmp")
+  # Extract extension, handling dotfiles correctly (.bashrc has no extension, .vimrc.bak has .bak)
+  local -- check_name="${file_basename#.}"
+  if [[ $check_name == *.* ]]; then
+    # Multi-dot filename: extract everything after last dot
+    file_ext="${file_basename##*.}"
+    file_name_noext="${file_basename%.*}"
+  else
+    # Single-word dotfile or no extension
+    file_ext=""
+    file_name_noext="$file_basename"
+  fi
 
-  # Track if original file existed and create backup for comparison
+  # Sanitize to prevent shell injection or filesystem issues
+  file_name_noext="${file_name_noext:0:40}"
+  file_name_noext="${file_name_noext//[^a-zA-Z0-9._-]/_}"
+
+  # Place extension at end of temp filename (required for syntax highlighting)
+  if [[ -n "$file_ext" ]]; then
+    TEMP_FILE=$(mktemp -p "$parent_dir" --suffix=".${file_ext}" ".${file_name_noext}_XXXXXX")
+  else
+    TEMP_FILE=$(mktemp -p "$parent_dir" ".${file_name_noext}_XXXXXX")
+  fi
+
+  # Keep a pristine copy to detect if user actually modified anything
   local -i file_existed=0
   local -- original_backup=""
   if [[ -e "$filepath" ]]; then
     file_existed=1
-    # Create a backup of original for comparison
-    original_backup=$(mktemp -p "$parent_dir" ".${file_basename}_orig_XXXXXX.tmp")
+    # Preserve extension for both temp files (editing + comparison)
+    if [[ -n "$file_ext" ]]; then
+      original_backup=$(mktemp -p "$parent_dir" --suffix=".${file_ext}" ".${file_name_noext}_orig_XXXXXX")
+    else
+      original_backup=$(mktemp -p "$parent_dir" ".${file_name_noext}_orig_XXXXXX")
+    fi
     cp -p "$filepath" "$original_backup" 2>/dev/null || cp "$filepath" "$original_backup"
-    # Copy to temp file for editing
     cp -p "$filepath" "$TEMP_FILE" 2>/dev/null || cp "$filepath" "$TEMP_FILE"
   else
     touch "$TEMP_FILE"
   fi
 
-  # Ensure temp file is writable
+  # Handle readonly files: editor needs write permission
   chmod u+w "$TEMP_FILE"
 
-  # Build editor command
-  local -a editor_cmd=("$EDITOR_PATH")
-  ((LINE_NUM == 0)) || editor_cmd+=("+$LINE_NUM")
-  editor_cmd+=("$TEMP_FILE")
-
-  # Edit loop
+  # Re-edit loop: allows user to fix validation errors without losing work
   local -i editing=1
   while ((editing)); do
-    # Launch editor
-    info "Launching editor '$(basename "$EDITOR_PATH")'"
-    "${editor_cmd[@]}"
+    local -a editcmd_args=(editcmd)
+    ((LINE_NUM > 0)) && editcmd_args+=(-l "$LINE_NUM")
+    editcmd_args+=("$TEMP_FILE")
 
-    # Reset line number after first edit
+    info "Launching editor with syntax highlighting"
+    "${editcmd_args[@]}" || die $? "Editor invocation failed (exit code $?)"
+
+    # Jump to line only on first edit; subsequent re-edits start at top
     LINE_NUM=0
-    editor_cmd=("$EDITOR_PATH" "$TEMP_FILE")
 
-    # Check if file was actually modified
+    # Skip validation and save if user made no changes (avoids spurious prompts)
     local -i file_changed=0
     if ((file_existed)); then
-      # For existing files, compare with original backup
       if ! cmp -s "$original_backup" "$TEMP_FILE"; then
         file_changed=1
       fi
     else
-      # For new files, check if temp file is non-empty
+      # New file: count as changed if non-empty
       if [[ -s "$TEMP_FILE" ]]; then
         file_changed=1
       fi
     fi
 
-    # If no changes were made, exit without validation or saving
     if ((file_changed == 0)); then
       info "No changes made to '$filepath'"
       rm -f "$TEMP_FILE" "$original_backup"
@@ -602,12 +547,12 @@ edit_file() {
       exit 0
     fi
 
-    # Validate if requested (only if file was changed)
+    # Validate only if enabled and file was actually modified
     if ((VALIDATE)); then
       if validate_file "$TEMP_FILE" "$filetype"; then
         editing=0
       else
-        # Validation failed - ask user what to do
+        # Allow user to re-edit, force-save, or abort
         vecho '' 'Options:' \
           '  [e] - Edit again' \
           '  [s] - Save anyway (not recommended)' \
@@ -641,9 +586,9 @@ edit_file() {
     fi
   done
 
-  # Move temp file to final location (atomic operation)
+  # Atomic file replacement: either succeeds completely or leaves original intact
   mv -f "$TEMP_FILE" "$filepath"
-  TEMP_FILE=""  # Clear so cleanup doesn't remove it
+  TEMP_FILE=""  # Prevent cleanup from removing the saved file
 
   # Clean up backup file
   [[ -n "$original_backup" ]] && rm -f "$original_backup"
@@ -656,40 +601,229 @@ edit_file() {
 # --------------------------------------------------------------------------------
 
 usage() {
-  cat <<EOT
-$SCRIPT_NAME $VERSION - Developer's Text Editor with Built-in Validation
+  cat <<'EOT'
+editfile - Developer's Text Editor with Built-in Validation
 
-A pure bash implementation with minimal external dependencies.
+A terminal-based text editor designed for developers, featuring automatic syntax
+validation, intelligent file type detection, and safe atomic file operations.
 
-Usage:
-  $SCRIPT_NAME [OPTIONS] filename
+SYNOPSIS
+  editfile [OPTIONS] filename
 
-Options:
-  -n|--no-validate      Skip validation
-  -l|--line LINE        Start editing at specified line number
-  -s|--shellcheck       Run shellcheck on shell scripts after editing
-  -V|--version          Show version information and exit
-  -h|--help             Display this help
+OPTIONS
+  -n, --no-validate     Skip syntax validation (faster for large files)
+  -l, --line LINE       Jump to specified line number on open
+  -s, --shellcheck      Run shellcheck on shell scripts (in addition to bash -n)
+  -V, --version         Show version information and exit
+  -h, --help            Display this help message
 
-Features:
-  • PATH search: If filename not found, searches PATH for executables
-  • Symlink resolution: Automatically resolves symlinks to actual files
-  • Binary protection: Refuses to edit binary executables
-  • Atomic operations: Uses temporary files for safe editing
+DESCRIPTION
+  editfile wraps your preferred text editor with intelligent features:
 
-Supported file types for validation:
-  JSON, YAML, XML, HTML, Python, Shell scripts, PHP, INI, CSV, TOML, Markdown
+  • Automatic file type detection (46+ types via extension, shebang, or content)
+  • Syntax validation after editing (10+ validators with graceful fallbacks)
+  • Syntax highlighting configuration for your editor (joe, nano, vim, emacs, vscode)
+  • Atomic file operations using temporary files
+  • Interactive validation failure handling (re-edit, force save, or quit)
+  • PATH search for editing scripts and executables
+  • Binary file protection (prevents corruption)
+  • Symlink resolution (edits the actual file)
+  • Permission checking (both file and directory)
+  • Safe temporary file cleanup on exit/interrupt
 
-Examples:
-  $SCRIPT_NAME file.py                   # Edit Python file with validation
-  $SCRIPT_NAME -n script.sh              # Edit shell script without validation
-  $SCRIPT_NAME -l 42 config.json         # Edit JSON file starting at line 42
-  $SCRIPT_NAME -s deploy.sh              # Edit shell script and run shellcheck
-  $SCRIPT_NAME cln                       # Search PATH and edit the cln script
-  $SCRIPT_NAME nginx.conf                # Edit or create nginx.conf in current dir
+VALIDATION WORKFLOW
+  When you save changes, editfile automatically validates the file:
 
-Environment Variables:
-  EDITOR        Text editor to use (defaults to available system editor)
+  1. If validation passes → File is saved, you're done
+  2. If validation fails → You get three options:
+     [e] Edit again   - Fix the errors and try again
+     [s] Save anyway  - Force save despite errors (not recommended)
+     [q] Quit         - Discard changes and exit
+
+  This prevents committing broken configuration files or syntax errors.
+
+SUPPORTED FILE TYPES
+
+  Validated Types (syntax checking):
+    JSON        - jq or python3
+    YAML        - yamllint or python3 (with PyYAML)
+    XML         - xmllint or python3
+    HTML        - tidy (basic validation)
+    Python      - python3 -m py_compile
+    Shell       - bash -n (plus optional shellcheck with -s flag)
+    PHP         - php -l
+    INI         - awk-based validation
+    CSV         - column consistency checking
+    TOML        - python3 with tomli/toml
+
+  Syntax Highlighted (40+ additional types):
+    JavaScript, TypeScript, C/C++, Java, Go, Rust, Ruby, Perl, Lua, TCL,
+    Erlang, Elixir, Haskell, Lisp, OCaml, Scala, Swift, R, SQL, Markdown,
+    LaTeX, Diff/Patch, and many more
+
+  Note: Files without validators still get syntax highlighting!
+
+EDITOR SELECTION
+  editfile uses the filetype package (editcmd) to launch your editor with
+  proper syntax highlighting. Editor selection priority:
+
+  1. $EDITOR environment variable (if set)
+  2. Automatic detection (searches for: joe, nano, vim, vi, etc.)
+  3. Falls back to: vim or joe
+
+  Set your preferred editor:
+    export EDITOR=nano      # Use nano
+    export EDITOR=vim       # Use vim
+    export EDITOR=joe       # Use joe
+
+EXAMPLES
+
+  Basic Editing:
+    editfile script.py              # Edit Python file with validation
+    editfile config.json            # Edit JSON with validation
+    editfile -n largefile.xml       # Skip validation for large files
+
+  Line Positioning:
+    editfile -l 42 script.py        # Jump to line 42
+    editfile -l 100 /etc/hosts      # Edit system file at line 100
+
+  Shell Script Editing:
+    editfile deploy.sh              # Edit with bash -n validation
+    editfile -s deploy.sh           # Edit with bash -n + shellcheck
+
+  PATH Search (edit scripts in your PATH):
+    editfile myscript               # Searches PATH if not found locally
+    editfile backup-script          # Edit script from /usr/local/bin
+
+  Creating New Files:
+    editfile newfile.py             # Creates new Python file
+    editfile config/app.yaml        # Creates directory if needed
+
+  Configuration Files:
+    editfile ~/.bashrc              # Edit bash configuration
+    editfile /etc/nginx/nginx.conf  # Edit nginx config (with sudo)
+
+  Validation Workflows:
+    editfile broken.json            # If invalid → prompted to fix
+    editfile -n broken.json         # Skip validation, save anyway
+
+USE CASES
+
+  1. Configuration Management:
+     editfile prevents saving broken config files. Edit nginx.conf, docker-compose.yml,
+     or .json configs with confidence that syntax errors are caught before deployment.
+
+  2. Script Development:
+     Catch Python syntax errors, bash mistakes, or PHP issues immediately while editing,
+     rather than discovering them when the script runs.
+
+  3. DevOps/SRE Work:
+     Quickly edit scripts in /usr/local/bin or other PATH locations without typing
+     full paths. Validation ensures no broken scripts get deployed.
+
+  4. Data File Editing:
+     Edit CSV files with automatic column consistency checking, or YAML/JSON data
+     with immediate feedback on structural problems.
+
+DEPENDENCIES
+
+  Required:
+    • bash 4.0+
+    • filetype package - https://github.com/Open-Technology-Foundation/filetype
+      Provides: editcmd, filetype-lib.sh
+      Install: git clone <url> && cd filetype && sudo ./install.sh
+
+  Optional (for validation):
+    • jq              - JSON validation (fastest)
+    • yamllint        - YAML validation
+    • xmllint         - XML validation
+    • python3         - Fallback validator for JSON/YAML/XML/Python/TOML
+    • PyYAML          - For YAML validation (pip install PyYAML)
+    • tomli           - For TOML validation (pip install tomli)
+    • shellcheck      - Advanced shell script analysis (use with -s flag)
+    • php             - PHP syntax checking
+    • tidy            - HTML validation
+
+  Note: Missing validators cause warnings but don't prevent editing.
+
+ENVIRONMENT VARIABLES
+
+  EDITOR    Your preferred text editor (e.g., vim, nano, joe, emacs)
+            If not set, editfile automatically detects available editors
+
+BEHAVIOR
+
+  File Not Found:
+    • If filename has no slashes → searches $PATH for the file
+    • Prompts "Edit executable '/path/to/script'?" if found
+    • Otherwise prompts "Create 'filename'?" for new files
+
+  Validation Failure:
+    • Shows validation error output
+    • Offers three choices: [e]dit again, [s]ave anyway, [q]uit
+    • Re-editing keeps your changes in the temp file
+
+  No Changes:
+    • Detects if you exited without changes
+    • Skips validation and exits silently (no unnecessary prompts)
+
+  Binary Files:
+    • Refuses to edit binary executables (prevents corruption)
+    • Uses multiple detection methods (file command + null byte check)
+
+  Permissions:
+    • Checks write permission before editing
+    • Checks directory write permission for new files
+    • Creates parent directories if needed (mkdir -p)
+
+  Atomic Operations:
+    • Edits temporary copy (preserves file extension for syntax highlighting)
+    • Only replaces original on successful validation
+    • Original file never corrupted if process interrupted
+
+SECURITY
+  editfile implements several security measures:
+  • Command injection prevention (filenames safely passed via sys.argv[])
+  • Filename sanitization for temporary files
+  • Binary file detection (prevents accidental editing/corruption)
+  • Path resolution (prevents traversal attacks)
+  • Self-edit protection (prevents corrupting the running script)
+
+  See SECURITY.md for details: https://github.com/Open-Technology-Foundation/editfile
+
+EXIT STATUS
+  0   Success (file saved or no changes)
+  1   Error (validation failed and user quit, or permission denied)
+  2   Invalid arguments
+  22  Invalid option
+
+FILES
+  ~/.editfile/        (none - stateless operation)
+  /tmp/.filename_*    Temporary files (auto-cleaned)
+
+TIPS
+
+  • Use -n for large files where validation would be slow
+  • Use -s for shell scripts to catch common mistakes early
+  • Set EDITOR once in ~/.bashrc instead of using -e every time
+  • Trust the validation - if it fails, there's usually a real problem
+  • Use -l with grep: grep -n "TODO" file.py → editfile -l <line> file.py
+
+SEE ALSO
+  editcmd(1), vim(1), nano(1), joe(1), shellcheck(1), jq(1)
+
+BUGS
+  Report issues: https://github.com/Open-Technology-Foundation/editfile/issues
+
+AUTHOR
+  Open Technology Foundation
+
+VERSION
+  editfile 1.0.0
+
+COPYRIGHT
+  GNU General Public License v3.0
+  https://www.gnu.org/licenses/gpl-3.0.en.html
 
 EOT
   exit "${1:-0}"
@@ -717,12 +851,9 @@ main() {
   # Validate arguments
   [[ -n "$FILENAME" ]] || die 1 'No filename specified'
 
-  # Get editor
-  get_editor
-
   # Check if file exists or search in PATH (before resolving path)
   if [[ ! -e "$FILENAME" ]]; then
-    local -- exec_path reply
+    local -- exec_path
 
     # If no directory separator, try to find in PATH
     if [[ "$FILENAME" != */* ]]; then

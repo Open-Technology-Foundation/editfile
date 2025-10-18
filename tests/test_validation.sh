@@ -3,14 +3,14 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-readonly EDIT_FILE="$SCRIPT_DIR/editfile"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+readonly SCRIPT_DIR
+EDIT_FILE="$SCRIPT_DIR/../editfile"
+readonly EDIT_FILE
 
 # Colors for output
-RED=$'\e[31m'
-GREEN=$'\e[32m'
-YELLOW=$'\e[33m'
-RESET=$'\e[0m'
+declare -- RED=$'\e[31m' GREEN=$'\e[32m' YELLOW=$'\e[33m' RESET=$'\e[0m'
+readonly -- RED GREEN YELLOW RESET
 
 echo "Testing editfile validation features..."
 echo
@@ -222,6 +222,7 @@ else
 fi
 
 # Test with full path as well
+declare -- FULL_PATH
 FULL_PATH=$(readlink -f "$EDIT_FILE")
 if "$EDIT_FILE" "$FULL_PATH" 2>&1 | grep -q "Cannot edit the running script"; then
   echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}"
