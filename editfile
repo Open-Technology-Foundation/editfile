@@ -6,7 +6,7 @@ shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script metadata
 VERSION='1.1.0'
-SCRIPT_PATH=$(readlink -en -- "$0")
+declare -- SCRIPT_PATH=$(readlink -en -- "$0")
 SCRIPT_NAME="${SCRIPT_PATH##*/}"
 readonly -- VERSION SCRIPT_PATH SCRIPT_NAME
 
@@ -270,9 +270,7 @@ validate_shell() {
   local -- filepath="$1"
 
   # Basic syntax check with bash -n
-  if ! bash -n "$filepath" 2>&1; then
-    return 1
-  fi
+  bash -n "$filepath" 2>&1 || return 1
 
   # Run shellcheck if requested and available
   if ((SHELLCHECK)) && command -v shellcheck >/dev/null 2>&1; then
