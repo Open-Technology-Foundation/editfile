@@ -21,7 +21,7 @@ declare -- FILENAME='' TEMP_FILE=''
 # Check for filetype package dependency
 if ! command -v editcmd >/dev/null 2>&1; then
   >&2 cat <<EOF
-$SCRIPT_NAME: ${RED}error${NC}: editcmd not found
+$SCRIPT_NAME $VERSION
 
 editfile requires the 'filetype' package to be installed.
 
