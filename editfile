@@ -6,9 +6,10 @@ shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script metadata
 VERSION='1.1.0'
-declare -- SCRIPT_PATH=$(readlink -en -- "$0")
-SCRIPT_NAME="${SCRIPT_PATH##*/}"
-readonly -- VERSION SCRIPT_PATH SCRIPT_NAME
+#shellcheck disable=SC2155  # BCS metadata: realpath in declare-r pattern
+declare -r SCRIPT_PATH=$(realpath -- "$0")
+#shellcheck disable=SC2034  # SCRIPT_DIR reserved for future use per BCS0103
+declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # Global variable declarations
 declare -i VALIDATE=1 LINE_NUM=0 SHELLCHECK=0
@@ -90,7 +91,7 @@ info() { >&2 _msg "$@"; }
 error() { >&2 _msg "$@"; }
 die() { (($# > 1)) && error "${@:2}"; exit "${1:-0}"; }
 
-noarg() { (($# > 1)) && [[ ${2:0:1} != '-' ]] || die 2 "Missing argument for option '$1'"; }
+noarg() { (($# > 1)) || die 2 "Option '$1' requires an argument"; }
 
 # Yes/no prompt function
 yn() {

@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # install.sh - Installation script for editfile
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose
 
 # Script metadata
+#shellcheck disable=SC2034  # VERSION reserved for future use per BCS0103
+VERSION='1.0.0'
+#shellcheck disable=SC2155  # BCS metadata: realpath in declare-r pattern
+declare -r SCRIPT_PATH=$(realpath -- "$0")
+#shellcheck disable=SC2034  # SCRIPT_NAME reserved for future use per BCS0103
+declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
+
+# Constants
 readonly FILETYPE_REPO="https://github.com/Open-Technology-Foundation/filetype.git"
 readonly INSTALL_DIR="/usr/local/bin"
 
@@ -91,21 +100,19 @@ install_filetype() {
 
 # Install editfile
 install_editfile() {
-  local -- script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
+  # Use SCRIPT_DIR from metadata (lines 9-10)
   info "Installing editfile..."
 
   # Check if editfile exists in current directory
-  if [[ ! -f "$script_dir/editfile" ]]; then
-    die 1 "editfile script not found in $script_dir"
+  if [[ ! -f "$SCRIPT_DIR/editfile" ]]; then
+    die 1 "editfile script not found in $SCRIPT_DIR"
   fi
 
   # Make executable
-  chmod +x "$script_dir/editfile" || die 1 "Failed to make editfile executable"
+  chmod +x "$SCRIPT_DIR/editfile" || die 1 "Failed to make editfile executable"
 
   # Copy to install directory
-  if ! cp "$script_dir/editfile" "$INSTALL_DIR/editfile"; then
+  if ! cp "$SCRIPT_DIR/editfile" "$INSTALL_DIR/editfile"; then
     die 1 "Failed to copy editfile to $INSTALL_DIR"
   fi
 
