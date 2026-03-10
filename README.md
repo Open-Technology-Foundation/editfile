@@ -87,14 +87,16 @@ editfile is a validation wrapper built on the [filetype package](https://github.
 ### Quick Start
 
 ```bash
+git clone https://github.com/Open-Technology-Foundation/editfile.git && cd editfile && sudo make install-deps && sudo make install
+```
+
+Or step-by-step:
+
+```bash
 git clone https://github.com/Open-Technology-Foundation/editfile.git
 cd editfile
-
-# Install filetype package dependency (if not already installed)
-sudo make install-deps
-
-# Install editfile
-sudo make install
+sudo make install-deps   # Install filetype dependency
+sudo make install        # Install editfile and bash completion
 ```
 
 ### Available Targets
