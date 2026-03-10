@@ -60,7 +60,7 @@ editfile is a validation wrapper built on the [filetype package](https://github.
 ┌─────────────────▼───────────────────────────┐
 │  filetype package (dependency)              │
 │  • editcmd - Editor launcher                │
-│  • filetype-lib.sh - Type detection (46+)   │
+│  • filetype - Type detection (100+)          │
 │  • Syntax highlighting configuration        │
 └─────────────────┬───────────────────────────┘
                   │ launches
@@ -74,7 +74,7 @@ editfile is a validation wrapper built on the [filetype package](https://github.
 
 1. **File Resolution** - Searches locally, then in PATH if not found
 2. **Binary Check** - Verifies file is text (using `file` command and null-byte detection)
-3. **Type Detection** - Identifies file type using filetype-lib.sh (extension, shebang, or content)
+3. **Type Detection** - Identifies file type using filetype library (extension, shebang, or content)
 4. **Temporary Copy** - Creates temp file with preserved extension for proper syntax highlighting
 5. **Editor Launch** - Uses editcmd to open file with correct syntax highlighting
 6. **Change Detection** - Compares temp file with original to detect actual changes
@@ -84,55 +84,39 @@ editfile is a validation wrapper built on the [filetype package](https://github.
 
 ## Installation
 
-### Automated Installation (Recommended)
-
-The easiest way to install editfile with all dependencies:
+### Quick Start
 
 ```bash
-# Clone the repository
 git clone https://github.com/Open-Technology-Foundation/editfile.git
 cd editfile
 
-# Run the installer (automatically installs filetype package if needed)
-sudo ./install.sh
+# Install filetype package dependency (if not already installed)
+sudo make install-deps
+
+# Install editfile
+sudo make install
 ```
 
-The installer will:
-1. Check for git
-2. Install the filetype package dependency (if not already installed)
-3. Install editfile to `/usr/local/bin`
-4. Check which optional validators are available
-
-### Manual Installation
-
-If you prefer to install manually:
-
-#### 1. Install the filetype Package (Required Dependency)
+### Available Targets
 
 ```bash
-# Quick install (one-liner)
-git clone https://github.com/Open-Technology-Foundation/filetype.git && cd filetype && sudo ./install.sh
-
-# Or step-by-step
-git clone https://github.com/Open-Technology-Foundation/filetype.git
-cd filetype
-sudo ./install.sh
+make                # Show help and available targets
+sudo make install   # Install editfile and bash completion
+sudo make uninstall # Remove editfile and bash completion
+make test           # Run test suite
+make check          # Run shellcheck on editfile
+make check-deps     # Check optional validators and python modules
+sudo make install-deps  # Install filetype package from GitHub
 ```
 
-This installs `editcmd` and `filetype-lib.sh` to `/usr/local/bin/`.
-
-#### 2. Install editfile
+### Custom Install Location
 
 ```bash
-# Clone this repository
-git clone https://github.com/Open-Technology-Foundation/editfile.git
-cd editfile
+# Install to a custom prefix
+sudo make install PREFIX=/opt/editfile
 
-# Make executable
-chmod +x editfile
-
-# Install to PATH
-sudo cp editfile /usr/local/bin/editfile
+# Packaging (staged install)
+make install DESTDIR=/tmp/pkg PREFIX=/usr
 ```
 
 ### Install Optional Validators (Recommended)
@@ -143,33 +127,17 @@ For full validation support:
 # Ubuntu/Debian
 sudo apt install jq yamllint libxml2-utils shellcheck php-cli tidy
 
-# macOS with Homebrew
-brew install jq yamllint libxml2 shellcheck php tidy-html5
-
 # Fedora/RHEL/Rocky
 sudo dnf install jq yamllint libxml2 ShellCheck php-cli tidy
 
 # Python-based validators
 pip install PyYAML tomli  # For YAML and TOML validation
+
+# Check what's installed
+make check-deps
 ```
 
 **Note**: Missing validators generate warnings but don't prevent editing.
-
-### Installation Options
-
-```bash
-# Standard installation
-sudo ./install.sh
-
-# Install editfile only (skip filetype check)
-sudo ./install.sh --skip-filetype
-
-# Uninstall editfile
-sudo ./install.sh --uninstall
-
-# View installer help
-./install.sh --help
-```
 
 ## Quick Start
 
@@ -393,10 +361,10 @@ All editors receive proper syntax highlighting configuration via editcmd.
 ## Dependencies
 
 ### Required
-- **bash 5.2+** - Shell interpreter
-- **filetype package** - Provides editcmd and filetype-lib.sh
+- **bash 4.4+** - Shell interpreter
+- **filetype package** - Provides filetype and editcmd
   - Install: https://github.com/Open-Technology-Foundation/filetype
-- **Standard Unix tools** - grep, awk, sed, file, od, readlink
+- **Standard Unix tools** - grep, awk, file, od, cmp, readlink, mktemp
 - **Text editor** - At least one: vim, nano, joe, emacs, vi
 
 ### Optional Validators
@@ -523,7 +491,7 @@ sudo ./install.sh
 # Verify installation
 command -v editcmd
 ls -l /usr/local/bin/editcmd
-ls -l /usr/local/bin/filetype-lib.sh
+ls -l /usr/local/bin/filetype
 ```
 
 #### 2. "No validator available" Warning
@@ -709,7 +677,7 @@ Contributions welcome! Please ensure:
 
 ### Adding a New Validator
 
-1. Add file type detection in `detect_file_type()` function (or rely on filetype-lib.sh)
+1. Add file type detection in `detect_file_type()` function (or rely on sourced filetype library)
 2. Create `validate_<type>()` function following existing patterns
 3. Add case in `validate_file()` dispatcher
 4. Update the validators table in README.md

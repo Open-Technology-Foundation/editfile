@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test script with shellcheck warnings
 
 echo $1  # SC2086: Double quote to prevent globbing

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Minimal test of validation flow
 
 set -euo pipefail

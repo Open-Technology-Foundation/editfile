@@ -78,10 +78,10 @@ editfile prevents editing itself while running to avoid corruption during atomic
 
 ## Testing
 
-A comprehensive security test suite is included in `test_security.sh`:
+A comprehensive security test suite is included in `tests/test_security.sh`:
 
 ```bash
-./test_security.sh
+./tests/test_security.sh
 ```
 
 Tests include:

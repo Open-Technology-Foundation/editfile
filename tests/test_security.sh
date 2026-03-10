@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Security test suite for editfile
 # Tests for command injection vulnerabilities and secure filename handling
 
@@ -33,23 +33,6 @@ cleanup() {
   rm -rf "$TEST_DIR"
 }
 trap cleanup EXIT
-
-# Test helper function
-run_test() {
-  local -- test_name="$1"
-  local -- test_cmd="$2"
-  local -- expected_behavior="$3"
-
-  echo "Test: $test_name"
-
-  if eval "$test_cmd"; then
-    echo "  ${GREEN}✓ PASS${RESET} - $expected_behavior"
-    ((TESTS_PASSED+=1))
-  else
-    echo "  ${RED}✗ FAIL${RESET} - $expected_behavior"
-    ((TESTS_FAILED+=1))
-  fi
-}
 
 # Create a simple test editor
 cat > "$TEST_DIR/test_editor.sh" << 'EOF'
