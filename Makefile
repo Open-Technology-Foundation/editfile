@@ -14,7 +14,7 @@ install:
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 editfile $(DESTDIR)$(BINDIR)/editfile
 	@if [ -d $(DESTDIR)$(COMPDIR) ]; then \
-	  install -m 644 .bash_completion $(DESTDIR)$(COMPDIR)/editfile; \
+	  install -m 644 editfile.bash_completion $(DESTDIR)$(COMPDIR)/editfile; \
 	fi
 	@if [ -z "$(DESTDIR)" ]; then $(MAKE) --no-print-directory check; fi
 
@@ -28,7 +28,9 @@ check:
 	  || echo 'editfile: NOT FOUND (check PATH)'
 
 test:
-	@for t in tests/test_*.sh; do bash "$$t" || exit 1; done
+	@for t in tests/test_validation.sh tests/test_security.sh tests/test_validation_flow.sh; do \
+	  bash "$$t" || exit 1; \
+	done
 
 help:
 	@echo 'Usage: make [target]'

@@ -127,6 +127,7 @@ OPTIONS
   -n, --no-validate     Skip syntax validation (faster for large files)
   -l, --line LINE       Jump to specified line number on open
   -s, --shellcheck      Run shellcheck on shell scripts (in addition to bash -n)
+  --                    End of options (allows filenames starting with -)
   -V, --version         Show version information and exit
   -h, --help            Display this help message
 
@@ -241,7 +242,7 @@ USE CASES
 DEPENDENCIES
 
   Required:
-    • bash 4.4+
+    • bash 5.2+
     • filetype package - https://github.com/Open-Technology-Foundation/filetype
       Provides: filetype, editcmd
       Install: git clone <url> && cd filetype && sudo make install
@@ -374,12 +375,12 @@ is_text_file() {
   file_info=$(file -b "$filepath" 2>/dev/null)
 
   # Trust file(1) when it identifies text or scripts
-  if [[ "$file_info" == *text* ]] || [[ "$file_info" == *script* ]]; then
+  if [[ $file_info == *text* ]] || [[ $file_info == *script* ]]; then
     return 0
   fi
 
   # Prevent editing compiled binaries (could corrupt them)
-  if [[ "$file_info" == *executable* ]] || [[ "$file_info" == *ELF* ]]; then
+  if [[ $file_info == *executable* ]] || [[ $file_info == *ELF* ]]; then
     return 1
   fi
 
@@ -393,15 +394,11 @@ is_text_file() {
 }
 
 find_in_path() {
-  local -- name="$1"
-  local -- path
-  path=$(command -v "$name" 2>/dev/null) || return 0
-
-  # Return canonical path so we can check if it's binary or text
-  # Resolving symlinks ensures we check the actual file, not a wrapper script
-  if [[ -n "$path" ]]; then
-    realpath -- "$path"
-  fi
+  local -- name=$1 path
+  path=$(command -v "$name" 2>/dev/null) || return 1
+  [[ -n "$path" ]] || return 1
+  # Resolve symlinks so we check the actual file, not a wrapper script
+  realpath -- "$path"
 }
 
 # Detect file type by delegating to filetype() from sourced filetype library
@@ -654,7 +651,8 @@ validate_file() {
   case $filetype in
     json) output=$(validate_json "$filepath" 2>&1) ;;
     yaml) output=$(validate_yaml "$filepath" 2>&1) ;;
-    xml|html) output=$(validate_xml "$filepath" 2>&1) ;;
+    xml)  output=$(validate_xml "$filepath" 2>&1) ;;
+    html) output=$(validate_html "$filepath" 2>&1) ;;
     python) output=$(validate_python "$filepath" 2>&1) ;;
     shell) output=$(validate_shell "$filepath" 2>&1) ;;
     php) output=$(validate_php "$filepath" 2>&1) ;;
@@ -790,7 +788,7 @@ edit_file() {
       info "No changes made to '$filepath'"
       rm -f "$TEMP_FILE" "$ORIGINAL_BACKUP"
       TEMP_FILE='' ORIGINAL_BACKUP=''
-      exit 0
+      return 0
     fi
 
     # Validate only if enabled and file was actually modified
@@ -819,7 +817,7 @@ edit_file() {
               vecho 'Quitting without saving.'
               rm -f "$TEMP_FILE" "$ORIGINAL_BACKUP"
               TEMP_FILE='' ORIGINAL_BACKUP=''
-              exit 0
+              return 0
               ;;
             *)
               >&2 echo "Invalid choice. Please enter 'e', 's', or 'q'."
@@ -851,15 +849,25 @@ main() {
   # Parse command-line arguments
   while (($#)); do case $1 in
     -n|--no-validate)  VALIDATE=0 ;;
-    -l|--line)         noarg "$@"; shift; LINE_NUM="$1" ;;
+    -l|--line)         noarg "$@"; shift
+                       [[ $1 =~ ^[0-9]+$ ]] || die "$ERR_INVAL" "Line number must be a non-negative integer: ${1@Q}"
+                       LINE_NUM=$1 ;;
     -s|--shellcheck)   SHELLCHECK=1 ;;
     -V|--version)      echo "$SCRIPT_NAME $VERSION"; exit 0 ;;
     -h|--help)         usage 0 ;;
+    --)                shift; break ;;
     -[nlsVh]?*)        set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue ;;
     -*)                die "$ERR_INVAL" "Invalid option ${1@Q}" ;;
     *)                 [[ -z "$FILENAME" ]] || die "$ERR_USAGE" 'Multiple filenames specified'
                        FILENAME="$1" ;;
   esac; shift; done
+
+  # Remaining arg after -- is the filename
+  if [[ -z "$FILENAME" ]] && (($#)); then
+    FILENAME="$1"
+    shift
+    (($# == 0)) || die "$ERR_USAGE" 'Multiple filenames specified'
+  fi
 
   readonly -- VALIDATE SHELLCHECK
 
@@ -872,7 +880,7 @@ main() {
 
     # If no directory separator, try to find in PATH
     if [[ "$FILENAME" != */* ]]; then
-      exec_path=$(find_in_path "$FILENAME")
+      exec_path=$(find_in_path "$FILENAME") || exec_path=''
 
       if [[ -n "$exec_path" ]]; then
         # Found in PATH - check if it's a text file

@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly SCRIPT_DIR
 EDIT_FILE="$SCRIPT_DIR/../editfile"
 readonly EDIT_FILE
@@ -11,6 +11,8 @@ readonly EDIT_FILE
 # Colors for output
 declare -- RED=$'\e[31m' GREEN=$'\e[32m' YELLOW=$'\e[33m' RESET=$'\e[0m'
 readonly -- RED GREEN YELLOW RESET
+
+declare -i TESTS_PASSED=0 TESTS_FAILED=0
 
 echo "Testing editfile validation features..."
 echo
@@ -33,9 +35,9 @@ EDITOR
 chmod +x /tmp/json_editor.sh
 
 if EDITOR=/tmp/json_editor.sh "$EDIT_FILE" /tmp/test_valid.json >/dev/null 2>&1; then
-  echo "${GREEN}✓ Valid JSON test passed${RESET}"
+  echo "${GREEN}✓ Valid JSON test passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Valid JSON test failed${RESET}"
+  echo "${RED}✗ Valid JSON test failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 rm -f /tmp/json_editor.sh
 
@@ -50,9 +52,9 @@ EOF
 
 # We need to validate without editing - so let's just check the JSON directly
 if ! jq empty /tmp/test_invalid.json 2>/dev/null && ! python3 -m json.tool /tmp/test_invalid.json >/dev/null 2>&1; then
-  echo "${GREEN}✓ Invalid JSON detection passed${RESET}"
+  echo "${GREEN}✓ Invalid JSON detection passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Invalid JSON detection failed${RESET}"
+  echo "${RED}✗ Invalid JSON detection failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 
 # Test 3: Valid Python
@@ -75,9 +77,9 @@ EDITOR
 chmod +x /tmp/py_editor.sh
 
 if EDITOR=/tmp/py_editor.sh "$EDIT_FILE" /tmp/test_valid.py >/dev/null 2>&1; then
-  echo "${GREEN}✓ Valid Python test passed${RESET}"
+  echo "${GREEN}✓ Valid Python test passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Valid Python test failed${RESET}"
+  echo "${RED}✗ Valid Python test failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 rm -f /tmp/py_editor.sh
 
@@ -89,9 +91,9 @@ def hello()
 EOF
 
 if ! python3 -m py_compile /tmp/test_invalid.py 2>/dev/null; then
-  echo "${GREEN}✓ Invalid Python detection passed${RESET}"
+  echo "${GREEN}✓ Invalid Python detection passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Invalid Python detection failed${RESET}"
+  echo "${RED}✗ Invalid Python detection failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 
 # Test 5: Valid Shell script
@@ -111,9 +113,9 @@ EDITOR
 chmod +x /tmp/sh_editor.sh
 
 if EDITOR=/tmp/sh_editor.sh "$EDIT_FILE" /tmp/test_valid.sh >/dev/null 2>&1; then
-  echo "${GREEN}✓ Valid Shell script test passed${RESET}"
+  echo "${GREEN}✓ Valid Shell script test passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Valid Shell script test failed${RESET}"
+  echo "${RED}✗ Valid Shell script test failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 rm -f /tmp/sh_editor.sh
 
@@ -128,9 +130,9 @@ fi
 EOF
 
 if ! bash -n /tmp/test_invalid.sh 2>/dev/null; then
-  echo "${GREEN}✓ Invalid Shell script detection passed${RESET}"
+  echo "${GREEN}✓ Invalid Shell script detection passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Invalid Shell script detection failed${RESET}"
+  echo "${RED}✗ Invalid Shell script detection failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 
 # Test 7: Valid YAML
@@ -151,9 +153,9 @@ EDITOR
 chmod +x /tmp/yaml_editor.sh
 
 if EDITOR=/tmp/yaml_editor.sh "$EDIT_FILE" /tmp/test_valid.yaml >/dev/null 2>&1; then
-  echo "${GREEN}✓ Valid YAML test passed${RESET}"
+  echo "${GREEN}✓ Valid YAML test passed${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Valid YAML test failed${RESET}"
+  echo "${RED}✗ Valid YAML test failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 rm -f /tmp/yaml_editor.sh
 
@@ -181,7 +183,7 @@ for ext in py sh json yaml xml html php ini csv; do
 
   detected=$(EDITOR=/tmp/add_content.sh "$EDIT_FILE" "/tmp/test.$ext" 2>&1 | grep "Validating" | awk '{print $2}' || true)
   if [[ -n "$detected" ]]; then
-    echo "  ${GREEN}✓ .$ext detected as $detected${RESET}"
+    echo "  ${GREEN}✓ .$ext detected as $detected${RESET}" ; ((TESTS_PASSED+=1))
   else
     echo "  ${YELLOW}⚠ .$ext detection could not be verified${RESET}"
   fi
@@ -193,31 +195,31 @@ rm -f /tmp/add_content.sh
 # Test 9: Editor detection
 echo "Test 9: Editor detection"
 if EDITOR=nonexistent "$EDIT_FILE" --help >/dev/null 2>&1; then
-  echo "${GREEN}✓ Editor detection with fallback works${RESET}"
+  echo "${GREEN}✓ Editor detection with fallback works${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Editor detection failed${RESET}"
+  echo "${RED}✗ Editor detection failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 
 # Test 10: Line number option
 echo "Test 10: Line number option"
 if "$EDIT_FILE" -l 5 --help 2>&1 | grep -q "editfile"; then
-  echo "${GREEN}✓ Line number option parsing works${RESET}"
+  echo "${GREEN}✓ Line number option parsing works${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ Line number option failed${RESET}"
+  echo "${RED}✗ Line number option failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 
 # Test 11: Self-edit prevention
 echo "Test 11: Self-edit prevention"
 # Try to edit the script itself
 if "$EDIT_FILE" "$EDIT_FILE" 2>&1 | grep -q "Cannot edit the running script"; then
-  echo "${GREEN}✓ Self-edit prevention works${RESET}"
+  echo "${GREEN}✓ Self-edit prevention works${RESET}" ; ((TESTS_PASSED+=1))
 else
   # It might not have errored because it's running in a subshell, test the message directly
   output=$("$EDIT_FILE" "$EDIT_FILE" 2>&1 || true)
   if echo "$output" | grep -q "Cannot edit"; then
-    echo "${GREEN}✓ Self-edit prevention works${RESET}"
+    echo "${GREEN}✓ Self-edit prevention works${RESET}" ; ((TESTS_PASSED+=1))
   else
-    echo "${RED}✗ Self-edit prevention failed${RESET}"
+    echo "${RED}✗ Self-edit prevention failed${RESET}" ; ((TESTS_FAILED+=1))
   fi
 fi
 
@@ -225,11 +227,11 @@ fi
 declare -- FULL_PATH
 FULL_PATH=$(readlink -f "$EDIT_FILE")
 if "$EDIT_FILE" "$FULL_PATH" 2>&1 | grep -q "Cannot edit the running script"; then
-  echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}"
+  echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}" ; ((TESTS_PASSED+=1))
 else
   output=$("$EDIT_FILE" "$FULL_PATH" 2>&1 || true)
   if echo "$output" | grep -q "Cannot edit"; then
-    echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}"
+    echo "  ${GREEN}✓ Full path self-edit prevention works${RESET}" ; ((TESTS_PASSED+=1))
   else
     echo "  ${YELLOW}⚠ Full path self-edit prevention may not work${RESET}"
   fi
@@ -249,9 +251,9 @@ EOF
 chmod +x /tmp/nochange_editor.sh
 
 if EDITOR=/tmp/nochange_editor.sh "$EDIT_FILE" -n /tmp/test_nochange.txt 2>&1 | grep -q "No changes made"; then
-  echo "${GREEN}✓ No-change detection works${RESET}"
+  echo "${GREEN}✓ No-change detection works${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ No-change detection failed${RESET}"
+  echo "${RED}✗ No-change detection failed${RESET}" ; ((TESTS_FAILED+=1))
 fi
 rm -f /tmp/nochange_editor.sh /tmp/test_nochange.txt
 
@@ -261,7 +263,7 @@ echo "Test 13: PATH search for executables"
 if command -v ls >/dev/null; then
   output=$(echo "n" | "$EDIT_FILE" ls 2>&1 || true)
   if echo "$output" | grep -q "binary file"; then
-    echo "${GREEN}✓ PATH search works (correctly identifies binary)${RESET}"
+    echo "${GREEN}✓ PATH search works (correctly identifies binary)${RESET}" ; ((TESTS_PASSED+=1))
   else
     echo "${YELLOW}⚠ PATH search may not be working as expected${RESET}"
   fi
@@ -273,9 +275,9 @@ echo "Test 14: Binary file detection"
 if command -v /bin/ls >/dev/null; then
   output=$("$EDIT_FILE" /bin/ls 2>&1 || true)
   if echo "$output" | grep -q "binary file"; then
-    echo "${GREEN}✓ Binary file detection works${RESET}"
+    echo "${GREEN}✓ Binary file detection works${RESET}" ; ((TESTS_PASSED+=1))
   else
-    echo "${RED}✗ Binary file detection failed${RESET}"
+    echo "${RED}✗ Binary file detection failed${RESET}" ; ((TESTS_FAILED+=1))
   fi
 fi
 
@@ -291,17 +293,17 @@ chmod +x /tmp/modify_editor.sh
 # Test markdown - should not show validation message
 echo "# Markdown" > /tmp/test.md
 if EDITOR=/tmp/modify_editor.sh "$EDIT_FILE" /tmp/test.md 2>&1 | grep -q "Validating markdown"; then
-  echo "${RED}✗ Markdown validation message shown (should be suppressed)${RESET}"
+  echo "${RED}✗ Markdown validation message shown (should be suppressed)${RESET}" ; ((TESTS_FAILED+=1))
 else
-  echo "${GREEN}✓ Markdown validation message correctly suppressed${RESET}"
+  echo "${GREEN}✓ Markdown validation message correctly suppressed${RESET}" ; ((TESTS_PASSED+=1))
 fi
 
 # Test text file - should not show validation message
 echo "Text content" > /tmp/test.txt
 if EDITOR=/tmp/modify_editor.sh "$EDIT_FILE" /tmp/test.txt 2>&1 | grep -q "Validating text"; then
-  echo "${RED}✗ Text validation message shown (should be suppressed)${RESET}"
+  echo "${RED}✗ Text validation message shown (should be suppressed)${RESET}" ; ((TESTS_FAILED+=1))
 else
-  echo "${GREEN}✓ Text validation message correctly suppressed${RESET}"
+  echo "${GREEN}✓ Text validation message correctly suppressed${RESET}" ; ((TESTS_PASSED+=1))
 fi
 
 # Test JSON - should show validation message
@@ -314,9 +316,9 @@ echo '{"test": false, "modified": true}' > "$1"
 EOF
 chmod +x /tmp/json_modifier.sh
 if EDITOR=/tmp/json_modifier.sh "$EDIT_FILE" /tmp/test.json 2>&1 | grep -q "Validating json"; then
-  echo "${GREEN}✓ JSON validation message correctly shown${RESET}"
+  echo "${GREEN}✓ JSON validation message correctly shown${RESET}" ; ((TESTS_PASSED+=1))
 else
-  echo "${RED}✗ JSON validation message not shown (should be shown)${RESET}"
+  echo "${RED}✗ JSON validation message not shown (should be shown)${RESET}" ; ((TESTS_FAILED+=1))
 fi
 rm -f /tmp/json_modifier.sh
 
@@ -337,7 +339,7 @@ chmod +x /tmp/check_tempname.sh
 # This is tricky to test without actually observing the temp file
 # We'll just make sure the script runs without error
 if EDITOR=/tmp/check_tempname.sh "$EDIT_FILE" -n /tmp/test_tempname.txt >/dev/null 2>&1; then
-  echo "${GREEN}✓ Temporary file naming works${RESET}"
+  echo "${GREEN}✓ Temporary file naming works${RESET}" ; ((TESTS_PASSED+=1))
 else
   echo "${YELLOW}⚠ Could not verify temporary file naming${RESET}"
 fi
@@ -347,5 +349,8 @@ rm -f /tmp/check_tempname.sh /tmp/test_tempname.txt
 rm -f /tmp/test_*.json /tmp/test_*.py /tmp/test_*.sh /tmp/test_*.yaml /tmp/test_*.md /tmp/test_*.txt
 
 echo
-echo "${GREEN}Testing complete!${RESET}"
+echo "========================================"
+echo "  Validation Tests: $((TESTS_PASSED + TESTS_FAILED)) total, ${GREEN}$TESTS_PASSED passed${RESET}, ${RED}$TESTS_FAILED failed${RESET}"
+echo "========================================"
+exit "$((TESTS_FAILED > 0 ? 1 : 0))"
 #fin

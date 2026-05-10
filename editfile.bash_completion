@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Bash completion for editfile
+
+_editfile() {
+  local cur prev words cword
+  _init_completion || return
+
+  case $prev in
+    -l|--line)
+      return 0
+      ;;
+    -h|--help|-V|--version)
+      return 0
+      ;;
+  esac
+
+  case $cur in
+    -*)
+      COMPREPLY=( $(compgen -W "-n --no-validate -l --line -s --shellcheck -V --version -h --help --" -- "$cur") )
+      return 0
+      ;;
+  esac
+
+  # Complete with filenames
+  _filedir
+}
+
+complete -F _editfile editfile
+
+#fin

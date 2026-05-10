@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly SCRIPT_DIR
 
 # Global vars
@@ -39,7 +39,7 @@ validate_shell() {
 }
 
 # Test it
-echo "Testing with file: test_shellcheck.sh"
+echo "Testing with file: fixture_shellcheck.sh"
 echo "SHELLCHECK variable is: $SHELLCHECK"
-validate_shell "$SCRIPT_DIR/test_shellcheck.sh"
+validate_shell "$SCRIPT_DIR/fixture_shellcheck.sh"
 #fin

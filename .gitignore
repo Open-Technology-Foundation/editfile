@@ -1,6 +1,7 @@
 # Project-specific files
 BASH-CODING-STANDARD.md
 CLAUDE.md
+.claude/
 AUDIT-*.md
 .gitignore
 
