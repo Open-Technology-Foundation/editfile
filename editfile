@@ -2,22 +2,28 @@
 # editfile - Developer's Text Editor with Built-in Validation
 # A pure bash implementation with minimal external dependencies
 set -euo pipefail
+# Bash version guard (BCS0409): must precede the shopt below
+(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 2) )) \
+  || { >&2 echo "${0##*/}: requires Bash >= 5.2 (have ${BASH_VERSION:-unknown})"; exit 2; }
 shopt -s inherit_errexit shift_verbose extglob nullglob
+# Capture invocation PATH before hardening: find_in_path() needs it for the
+# documented $PATH-search feature (editing scripts anywhere on the user's PATH)
+declare -r ORIG_PATH=$PATH
+# BCS1002 hardened PATH; not readonly: find_in_path() prefixes ORIG_PATH temporarily
 PATH=/usr/local/bin:/usr/bin:/bin; export PATH
 
 # Script metadata
-declare -r VERSION='1.1.0'
+declare -r VERSION='1.2.0'
 #shellcheck disable=SC2155  # BCS metadata: realpath in declare-r pattern
 declare -r SCRIPT_PATH=$(realpath -- "$0")
-#shellcheck disable=SC2034  # SCRIPT_DIR reserved for future use per BCS0103
+#shellcheck disable=SC2034  # SCRIPT_DIR is part of the BCS0103 standard metadata set
 declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # BCS0602 exit codes
 declare -ri ERR_USAGE=2 ERR_IO=5 ERR_TYPE=10 ERR_ACCESS=13 ERR_BUSY=16 ERR_NODEP=18 ERR_INVAL=22
 
 # Global variable declarations
-#shellcheck disable=SC2034  # DEBUG required by BCS0701, consumed by future debug logging
-declare -i VALIDATE=1 LINE_NUM=0 SHELLCHECK=0 VERBOSE=1 DEBUG=0
+declare -i VALIDATE=1 LINE_NUM=0 SHELLCHECK=0 VERBOSE=1
 declare -- FILENAME='' TEMP_FILE='' ORIGINAL_BACKUP=''
 
 # Color definitions (must be before dependency checks which use them)
@@ -27,13 +33,11 @@ else
   declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
 fi
 
-# --------------------------------------------------------------------------------
-# DEPENDENCY CHECKING
-# --------------------------------------------------------------------------------
+# Dependency checking
 
 # Check for filetype package dependency
 if ! command -v editcmd &>/dev/null; then
-  >&2 cat <<EOF
+  >&2 cat <<INSTALL_HELP
 $SCRIPT_NAME $VERSION
 
 editfile requires the 'filetype' package to be installed.
@@ -47,17 +51,17 @@ Or step-by-step:
   sudo make install
 
 This installs filetype and editcmd to /usr/local/bin/
-EOF
+INSTALL_HELP
   exit "$ERR_NODEP"
 fi
 
 # Source filetype library for comprehensive file type detection
 # Derive path from editcmd location (already confirmed to exist above)
 #shellcheck disable=SC2155  # editcmd existence already confirmed above
-declare -r _editcmd_path=$(command -v editcmd)
-declare -r FILETYPE_LIB="${_editcmd_path%/*}/filetype"
+declare -r EDITCMD_PATH=$(command -v editcmd)
+declare -r FILETYPE_LIB="${EDITCMD_PATH%/*}/filetype"
 if [[ ! -r "$FILETYPE_LIB" ]]; then
-  >&2 echo "$RED Error:$NC filetype not found at $FILETYPE_LIB"
+  >&2 echo "$RED Error:$NC filetype not found at ${FILETYPE_LIB@Q}"
   >&2 echo 'Please install the filetype package.'
   exit "$ERR_NODEP"
 fi
@@ -67,14 +71,12 @@ source "$FILETYPE_LIB"
 
 # Verify critical functions are available
 if ! declare -F filetype &>/dev/null; then
-  >&2 echo "$RED Error:$NC filetype() function not available after sourcing $FILETYPE_LIB"
+  >&2 echo "$RED Error:$NC filetype() function not available after sourcing ${FILETYPE_LIB@Q}"
   >&2 echo 'Please reinstall the filetype package.'
   exit "$ERR_NODEP"
 fi
 
-# --------------------------------------------------------------------------------
-# UTILITY FUNCTIONS
-# --------------------------------------------------------------------------------
+# Messaging functions
 
 # Core message function using FUNCNAME for context
 _msg() {
@@ -86,35 +88,29 @@ _msg() {
     error)   prefix+=" ${RED}✗${NC}" ;;
     *)       ;;
   esac
-  for msg in "$@"; do printf '%s %s\n' "$prefix" "$msg"; done
+  # Single stderr-routing authority for all messaging (BCS0703); never fatal,
+  # even when stderr is a closed pipe (SIGPIPE ignored -> EPIPE write errors)
+  for msg in "$@"; do >&2 printf '%s %s\n' "$prefix" "$msg" ||:; done
 }
 
-# Standard message wrappers (all to stderr per BCS0702)
-vecho()   { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
-success() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
-warn()    { >&2 _msg "$@"; }
-info()    { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
+# Standard message wrappers
+vecho()   { ((VERBOSE)) || return 0; _msg "$@"; }
+success() { ((VERBOSE)) || return 0; _msg "$@"; }
+warn()    { _msg "$@"; }
+info()    { ((VERBOSE)) || return 0; _msg "$@"; }
 
 # Unconditional output
-error() { >&2 _msg "$@"; }
+error() { _msg "$@"; }
 die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
 
-noarg() { (($# > 1)) || die "$ERR_USAGE" "Option ${1@Q} requires an argument"; }
-
-# Yes/no prompt function
-yn() {
-  local -- reply
-  read -r -n1 -p "$SCRIPT_NAME: $YELLOW$1$NC y/n " reply
-  echo
-  [[ ${reply,,} == y ]]
-}
-
-# --------------------------------------------------------------------------------
-# USAGE DOCUMENTATION
-# --------------------------------------------------------------------------------
+# Help documentation
 
 usage() {
-  cat <<'EOT'
+  # Assembled into one variable and emitted with a single write so an early
+  # reader exit (e.g. `editfile -h | grep -q ...` under pipefail) cannot
+  # SIGPIPE a later heredoc
+  local -- usage_text
+  usage_text=$(cat <<'USAGE'
 editfile - Developer's Text Editor with Built-in Validation
 
 A terminal-based text editor designed for developers, featuring automatic syntax
@@ -127,6 +123,8 @@ OPTIONS
   -n, --no-validate     Skip syntax validation (faster for large files)
   -l, --line LINE       Jump to specified line number on open
   -s, --shellcheck      Run shellcheck on shell scripts (in addition to bash -n)
+  -v, --verbose         Enable informational messages (default)
+  -q, --quiet           Suppress informational messages
   --                    End of options (allows filenames starting with -)
   -V, --version         Show version information and exit
   -h, --help            Display this help message
@@ -294,19 +292,23 @@ BEHAVIOR
     • Edits temporary copy (preserves file extension for syntax highlighting)
     • Only replaces original on successful validation
     • Original file never corrupted if process interrupted
+    • Permissions preserved (umask-derived for new files); replacement is by
+      rename, so hard links to the old file are broken
+    • Warns before overwriting if the file changed on disk while editing
 
 SECURITY
   editfile implements several security measures:
   • Command injection prevention (filenames safely passed via sys.argv[])
-  • Filename sanitization for temporary files
+  • Temp-file basename and extension sanitization
   • Binary file detection (prevents accidental editing/corruption)
-  • Path resolution (prevents traversal attacks)
+  • Symlink and path canonicalisation before editing
   • Self-edit protection (prevents corrupting the running script)
 
   See SECURITY.md for details: https://github.com/Open-Technology-Foundation/editfile
 
 EXIT STATUS (BCS0602)
   0   Success (file saved or no changes)
+  1   Runtime error (editor failure, declined overwrite, internal error)
   2   Usage error (missing/extra arguments)
   5   I/O error (cannot create directory)
   10  Type error (file is binary)
@@ -335,41 +337,59 @@ BUGS
 
 AUTHOR
   Open Technology Foundation
-
-VERSION
-  editfile 1.1.0
-
-COPYRIGHT
-  GNU General Public License v3.0
-  https://www.gnu.org/licenses/gpl-3.0.en.html
-
-EOT
+USAGE
+  )
+  printf '%s\n\nVERSION\n  %s %s\n\nCOPYRIGHT\n  GNU General Public License v3.0\n  https://www.gnu.org/licenses/gpl-3.0.en.html\n\n' \
+    "$usage_text" "$SCRIPT_NAME" "$VERSION"
   exit "${1:-0}"
 }
 
-# --------------------------------------------------------------------------------
-# CLEANUP AND ERROR HANDLING
-# --------------------------------------------------------------------------------
+# Helper functions
+
+noarg() { (($# > 1)) || die "$ERR_USAGE" "Option ${1@Q} requires an argument"; }
+
+# Yes/no prompt (BCS0709)
+yn() {
+  local -- REPLY
+  >&2 printf '%s' "$SCRIPT_NAME: $YELLOW▲$NC ${1:-Continue?} y/n "
+  read -r -n 1
+  >&2 echo
+  [[ ${REPLY,,} == y ]]
+}
+
+# Remove working temp files (and editor backups of them, e.g. joe's file~)
+discard_temps() {
+  [[ -z "$TEMP_FILE" ]] || rm -f -- "$TEMP_FILE" "${TEMP_FILE}~"
+  [[ -z "$ORIGINAL_BACKUP" ]] || rm -f -- "$ORIGINAL_BACKUP" "${ORIGINAL_BACKUP}~"
+  TEMP_FILE='' ORIGINAL_BACKUP=''
+}
+
+# Cleanup and traps
 
 cleanup() {
   local -i exitcode=${1:-$?}
-  trap - SIGINT SIGTERM EXIT
-  [[ -z "${TEMP_FILE:-}" ]] || rm -f "$TEMP_FILE" ||:
-  [[ -z "${ORIGINAL_BACKUP:-}" ]] || rm -f "$ORIGINAL_BACKUP" ||:
+  trap - SIGINT SIGTERM SIGHUP EXIT
+  discard_temps ||:
   exit "$exitcode"
 }
 
-trap 'cleanup $?' SIGINT SIGTERM EXIT
+trap 'cleanup $?' SIGINT SIGTERM SIGHUP EXIT
+# Ignore SIGPIPE: a consumer closing early (e.g. `editfile x 2>&1 | head`)
+# must not abort an in-flight save; message writes degrade to EPIPE failures
+# that the messaging layer tolerates (||:)
+trap '' PIPE
 
-# --------------------------------------------------------------------------------
-# FILE TYPE DETECTION
-# --------------------------------------------------------------------------------
+# File type detection
 
 is_text_file() {
   local -- filepath="$1"
 
   # Nonexistent files will be created, so treat them as editable text
   [[ -e "$filepath" ]] || return 0
+
+  # Directories, FIFOs, sockets and devices are not editable (a FIFO would
+  # block the null-byte probe below forever)
+  [[ -f "$filepath" ]] || return 1
 
   local -- file_info
   file_info=$(file -b "$filepath" 2>/dev/null)
@@ -395,8 +415,12 @@ is_text_file() {
 
 find_in_path() {
   local -- name=$1 path
-  path=$(command -v "$name" 2>/dev/null) || return 1
-  [[ -n "$path" ]] || return 1
+  [[ "$name" == -* ]] && return 1
+  # Search the user's original PATH, not the hardened one (documented feature)
+  path=$(PATH=$ORIG_PATH command -v -- "$name" 2>/dev/null) || return 1
+  # command -v returns bare names for builtins/functions/aliases; only real
+  # filesystem hits are editable
+  [[ "$path" == /* ]] || return 1
   # Resolve symlinks so we check the actual file, not a wrapper script
   realpath -- "$path"
 }
@@ -418,9 +442,7 @@ detect_file_type() {
   esac
 }
 
-# --------------------------------------------------------------------------------
-# VALIDATORS
-# --------------------------------------------------------------------------------
+# Validators
 
 # JSON validation
 validate_json() {
@@ -436,7 +458,7 @@ validate_json() {
 
   # Fallback to Python
   if command -v python3 &>/dev/null; then
-    if ! python3 -m json.tool "$filepath" >/dev/null 2>&1; then
+    if ! python3 -m json.tool "$filepath" &>/dev/null; then
       return 1
     fi
     return 0
@@ -450,20 +472,31 @@ validate_json() {
 validate_yaml() {
   local -- filepath="$1"
 
-  # Try yamllint first
+  # Try yamllint first; relaxed profile reports syntax errors without failing
+  # on style lint (line length etc.) — this is a syntax check, not a linter
   if command -v yamllint &>/dev/null; then
-    if ! yamllint "$filepath" 2>&1; then
+    if ! yamllint -d relaxed -- "$filepath"; then
       return 1
     fi
     return 0
   fi
 
-  # Fallback to Python with PyYAML
+  # Fallback to Python with PyYAML; a missing module is a warning, not a failure
   if command -v python3 &>/dev/null; then
-    if ! python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$filepath" 2>&1; then
-      return 1
-    fi
-    return 0
+    local -i rc=0
+    python3 -c '
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(2)
+yaml.safe_load(open(sys.argv[1]))' "$filepath" || rc=$?
+    case $rc in
+      0) return 0 ;;
+      2) warn 'No YAML validator available' '(install yamllint or python3 with PyYAML)'
+         return 0 ;;
+      *) return 1 ;;
+    esac
   fi
 
   warn 'No YAML validator available' '(install yamllint or python3 with PyYAML)'
@@ -484,7 +517,7 @@ validate_xml() {
 
   # Fallback to Python
   if command -v python3 &>/dev/null; then
-    if ! python3 -c "import sys, xml.etree.ElementTree as ET; ET.parse(sys.argv[1])" "$filepath" 2>&1; then
+    if ! python3 -c 'import sys, xml.etree.ElementTree as ET; ET.parse(sys.argv[1])' "$filepath" 2>&1; then
       return 1
     fi
     return 0
@@ -498,8 +531,10 @@ validate_xml() {
 validate_python() {
   local -- filepath="$1"
 
+  # In-memory compile: same syntax check as py_compile without littering
+  # the target directory with __pycache__ entries
   if command -v python3 &>/dev/null; then
-    if ! python3 -m py_compile "$filepath" 2>&1; then
+    if ! python3 -c 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec")' "$filepath" 2>&1; then
       return 1
     fi
     return 0
@@ -516,14 +551,18 @@ validate_shell() {
   # Basic syntax check with bash -n
   bash -n "$filepath" 2>&1 || return 1
 
-  # Run shellcheck if requested and available
-  if ((SHELLCHECK)) && command -v shellcheck &>/dev/null; then
-    info 'Running shellcheck...'
-    local -- shellcheck_output
-    shellcheck_output=$(shellcheck "$filepath" 2>&1 || true)
-    if [[ -n "$shellcheck_output" ]]; then
-      warn 'Shellcheck issues:'
-      >&2 echo "$shellcheck_output"
+  # Run shellcheck if requested
+  if ((SHELLCHECK)); then
+    if command -v shellcheck &>/dev/null; then
+      info 'Running shellcheck...'
+      local -- shellcheck_output
+      shellcheck_output=$(shellcheck "$filepath" 2>&1 ||:)
+      if [[ -n "$shellcheck_output" ]]; then
+        warn 'Shellcheck issues:'
+        >&2 echo "$shellcheck_output" ||:
+      fi
+    else
+      warn 'shellcheck requested (-s) but not installed; skipping'
     fi
   fi
 
@@ -549,20 +588,15 @@ validate_php() {
 validate_html() {
   local -- filepath="$1"
 
-  # Try tidy if available
   if command -v tidy &>/dev/null; then
-    # tidy returns non-zero for warnings, so we just check for errors
-    if ! tidy -errors -q "$filepath" 2>&1; then
-      return 1
-    fi
+    # tidy exit codes: 0=clean, 1=warnings only, 2=errors
+    local -i rc=0
+    tidy -errors -q "$filepath" || rc=$?
+    ((rc >= 2)) && return 1
     return 0
   fi
 
-  # Basic check: ensure it's valid UTF-8 and has some HTML-like content
-  if file "$filepath" 2>/dev/null | grep -q "HTML\|XML\|text"; then
-    return 0
-  fi
-
+  warn 'No HTML validator available' '(install tidy)'
   return 0
 }
 
@@ -570,16 +604,15 @@ validate_html() {
 validate_ini() {
   local -- filepath="$1"
 
-  # Basic INI validation with awk
+  # Basic INI validation with awk; report the offending line, not just rc
   local -i rc=0
   awk '
-    BEGIN { valid=1 }
     /^[[:space:]]*$/ { next }  # Skip empty lines
     /^[[:space:]]*[#;]/ { next }  # Skip comments
     /^[[:space:]]*\[.*\][[:space:]]*$/ { next }  # Section headers
     /^[[:space:]]*[^=]+=.*$/ { next }  # Key=value pairs
-    { valid=0; exit 1 }  # Invalid line
-  ' "$filepath" 2>/dev/null || rc=$?
+    { printf "Line %d: not a section, comment, or key=value pair: %s\n", NR, $0; exit 1 }
+  ' "$filepath" || rc=$?
   return "$rc"
 }
 
@@ -587,7 +620,22 @@ validate_ini() {
 validate_csv() {
   local -- filepath="$1"
 
-  # Use awk to check column count consistency
+  # Python csv module handles RFC 4180 quoted fields; awk cannot
+  if command -v python3 &>/dev/null; then
+    local -i rc=0
+    python3 -c '
+import sys, csv
+with open(sys.argv[1], newline="") as f:
+    rows = [r for r in csv.reader(f) if r]
+if rows:
+    cols = len(rows[0])
+    for i, row in enumerate(rows[1:], 2):
+        if len(row) != cols:
+            sys.exit(f"Line {i}: Expected {cols} columns, found {len(row)}")' "$filepath" || rc=$?
+    return "$rc"
+  fi
+
+  # awk fallback: naive comma split, no quoted-field support
   local -i rc=0
   awk -F',' '
     NR==1 { cols=NF; next }
@@ -595,7 +643,7 @@ validate_csv() {
       print "Line " NR ": Expected " cols " columns, found " NF
       exit 1
     }
-  ' "$filepath" 2>&1 || rc=$?
+  ' "$filepath" || rc=$?
   return "$rc"
 }
 
@@ -603,24 +651,27 @@ validate_csv() {
 validate_toml() {
   local -- filepath="$1"
 
-  # Try Python with tomli/toml
+  # Try Python: stdlib tomllib (3.11+), then tomli, then legacy toml.
+  # Binary vs text open mode follows the imported module, not a dir() probe.
   if command -v python3 &>/dev/null; then
     local -i rc=0
-    python3 -c "
+    python3 -c '
 import sys
 try:
-    import tomli as toml
+    import tomllib as parser; mode = "rb"
 except ImportError:
     try:
-        import toml
+        import tomli as parser; mode = "rb"
     except ImportError:
-        exit(2)
-with open(sys.argv[1], 'rb' if 'tomli' in dir() else 'r') as f:
-    toml.load(f)
-" "$filepath" 2>&1 || rc=$?
+        try:
+            import toml as parser; mode = "r"
+        except ImportError:
+            sys.exit(2)
+with open(sys.argv[1], mode) as f:
+    parser.load(f)' "$filepath" || rc=$?
     case $rc in
       0) return 0 ;;
-      2) warn 'No TOML parser available' '(install python3 with tomli or toml)'
+      2) warn 'No TOML parser available' '(needs python3 3.11+, or the tomli/toml module)'
          return 0 ;;
       *) return 1 ;;
     esac
@@ -639,7 +690,7 @@ validate_file() {
   case $filetype in
     json|yaml|xml|html|python|shell|php|ini|csv|toml)
       # Has a validator - show message and validate
-      info "Validating $filetype file '$filepath'"
+      info "Validating $filetype file ${filepath@Q}"
       ;;
     *)
       # No validator for this type - skip silently
@@ -648,24 +699,24 @@ validate_file() {
   esac
 
   local -- output
+  local -i exit_code=0
   case $filetype in
-    json) output=$(validate_json "$filepath" 2>&1) ;;
-    yaml) output=$(validate_yaml "$filepath" 2>&1) ;;
-    xml)  output=$(validate_xml "$filepath" 2>&1) ;;
-    html) output=$(validate_html "$filepath" 2>&1) ;;
-    python) output=$(validate_python "$filepath" 2>&1) ;;
-    shell) output=$(validate_shell "$filepath" 2>&1) ;;
-    php) output=$(validate_php "$filepath" 2>&1) ;;
-    ini) output=$(validate_ini "$filepath" 2>&1) ;;
-    csv) output=$(validate_csv "$filepath" 2>&1) ;;
-    toml) output=$(validate_toml "$filepath" 2>&1) ;;
+    json)   output=$(validate_json "$filepath" 2>&1)   || exit_code=$? ;;
+    yaml)   output=$(validate_yaml "$filepath" 2>&1)   || exit_code=$? ;;
+    xml)    output=$(validate_xml "$filepath" 2>&1)    || exit_code=$? ;;
+    html)   output=$(validate_html "$filepath" 2>&1)   || exit_code=$? ;;
+    python) output=$(validate_python "$filepath" 2>&1) || exit_code=$? ;;
+    shell)  output=$(validate_shell "$filepath" 2>&1)  || exit_code=$? ;;
+    php)    output=$(validate_php "$filepath" 2>&1)    || exit_code=$? ;;
+    ini)    output=$(validate_ini "$filepath" 2>&1)    || exit_code=$? ;;
+    csv)    output=$(validate_csv "$filepath" 2>&1)    || exit_code=$? ;;
+    toml)   output=$(validate_toml "$filepath" 2>&1)   || exit_code=$? ;;
+    *)      die 1 "Internal error: validator list mismatch for ${filetype@Q}" ;;
   esac
-
-  local -i exit_code=$?
 
   # Always show output if there is any (for shellcheck warnings, etc.)
   if [[ -n "$output" ]]; then
-    >&2 echo "$output"
+    >&2 echo "$output" ||:
   fi
 
   if ((exit_code)); then
@@ -677,15 +728,16 @@ validate_file() {
   return 0
 }
 
-# --------------------------------------------------------------------------------
-# FILE EDITING
-# --------------------------------------------------------------------------------
+# File editing
 
 edit_file() {
   local -- filepath="$1"
   local -- filetype
 
-  # Check if it's a text file
+  if [[ -e "$filepath" && ! -f "$filepath" ]]; then
+    die "$ERR_TYPE" "${filepath@Q} is not a regular file"
+  fi
+
   if ! is_text_file "$filepath"; then
     die "$ERR_TYPE" "${filepath@Q} is a binary file"
   fi
@@ -695,20 +747,25 @@ edit_file() {
     die "$ERR_ACCESS" "No write permission for ${filepath@Q}"
   fi
 
-  # Check parent directory permissions for new files
-  local -- parent_dir
-  parent_dir=${filepath%/*}
-  if [[ ! -e "$filepath" ]]; then
-    if [[ ! -d "$parent_dir" ]]; then
-      mkdir -p "$parent_dir" || die "$ERR_IO" "Cannot create parent directory ${parent_dir@Q}"
-    fi
-    if [[ ! -w "$parent_dir" ]]; then
-      die "$ERR_ACCESS" "No write permission for directory ${parent_dir@Q}"
-    fi
+  # Record original mode so the save path can restore it (mktemp creates 0600)
+  local -- orig_mode=''
+  if [[ -e "$filepath" ]]; then
+    orig_mode=$(stat -c '%a' -- "$filepath" 2>/dev/null) || orig_mode=''
   fi
 
-  # Detect file type
-  filetype=$(detect_file_type "$filepath")
+  local -- parent_dir
+  parent_dir=${filepath%/*}
+  [[ -n "$parent_dir" ]] || parent_dir='/'
+  if [[ ! -e "$filepath" && ! -d "$parent_dir" ]]; then
+    mkdir -p -- "$parent_dir" || die "$ERR_IO" "Cannot create parent directory ${parent_dir@Q}"
+  fi
+  # Temp files live beside the target, so the directory must be writable even
+  # when editing an existing file
+  if [[ ! -w "$parent_dir" ]]; then
+    die "$ERR_ACCESS" "No write permission for directory ${parent_dir@Q}"
+  fi
+
+  filetype=$(detect_file_type "$filepath") || die 1 "File type detection failed for ${filepath@Q}"
 
   # Preserve file extension in temp filename so editcmd's filetype detection works correctly
   local -- file_basename file_ext file_name_noext
@@ -729,12 +786,16 @@ edit_file() {
   # Sanitize to prevent shell injection or filesystem issues
   file_name_noext="${file_name_noext:0:40}"
   file_name_noext="${file_name_noext//[^a-zA-Z0-9._-]/_}"
+  file_ext="${file_ext:0:12}"
+  file_ext="${file_ext//[^a-zA-Z0-9_-]/_}"
 
   # Place extension at end of temp filename (required for syntax highlighting)
   if [[ -n "$file_ext" ]]; then
-    TEMP_FILE=$(mktemp -p "$parent_dir" --suffix=".${file_ext}" ".${file_name_noext}_XXXXXX")
+    TEMP_FILE=$(mktemp -p "$parent_dir" --suffix=".${file_ext}" ".${file_name_noext}_XXXXXX") \
+      || die "$ERR_IO" "Cannot create temp file in ${parent_dir@Q}"
   else
-    TEMP_FILE=$(mktemp -p "$parent_dir" ".${file_name_noext}_XXXXXX")
+    TEMP_FILE=$(mktemp -p "$parent_dir" ".${file_name_noext}_XXXXXX") \
+      || die "$ERR_IO" "Cannot create temp file in ${parent_dir@Q}"
   fi
 
   # Keep a pristine copy to detect if user actually modified anything
@@ -743,30 +804,37 @@ edit_file() {
     file_existed=1
     # Preserve extension for both temp files (editing + comparison)
     if [[ -n "$file_ext" ]]; then
-      ORIGINAL_BACKUP=$(mktemp -p "$parent_dir" --suffix=".${file_ext}" ".${file_name_noext}_orig_XXXXXX")
+      ORIGINAL_BACKUP=$(mktemp -p "$parent_dir" --suffix=".${file_ext}" ".${file_name_noext}_orig_XXXXXX") \
+        || die "$ERR_IO" "Cannot create backup file in ${parent_dir@Q}"
     else
-      ORIGINAL_BACKUP=$(mktemp -p "$parent_dir" ".${file_name_noext}_orig_XXXXXX")
+      ORIGINAL_BACKUP=$(mktemp -p "$parent_dir" ".${file_name_noext}_orig_XXXXXX") \
+        || die "$ERR_IO" "Cannot create backup file in ${parent_dir@Q}"
     fi
-    cp -p "$filepath" "$ORIGINAL_BACKUP" 2>/dev/null || cp "$filepath" "$ORIGINAL_BACKUP"
-    cp -p "$filepath" "$TEMP_FILE" 2>/dev/null || cp "$filepath" "$TEMP_FILE"
+    cp -p -- "$filepath" "$ORIGINAL_BACKUP" 2>/dev/null \
+      || cp -- "$filepath" "$ORIGINAL_BACKUP" \
+      || die "$ERR_IO" "Cannot back up ${filepath@Q}"
+    cp -p -- "$filepath" "$TEMP_FILE" 2>/dev/null \
+      || cp -- "$filepath" "$TEMP_FILE" \
+      || die "$ERR_IO" "Cannot copy ${filepath@Q} for editing"
   else
-    touch -- "$TEMP_FILE"
+    touch -- "$TEMP_FILE" || die "$ERR_IO" "Cannot write ${TEMP_FILE@Q}"
   fi
 
   # Handle readonly files: editor needs write permission
-  chmod u+w -- "$TEMP_FILE"
+  chmod u+w -- "$TEMP_FILE" || die "$ERR_IO" "Cannot set write permission on ${TEMP_FILE@Q}"
 
   # Re-edit loop: allows user to fix validation errors without losing work
-  local -i editing=1 file_changed=0
+  local -i editing=1 file_changed=0 editor_rc=0
   local -a editcmd_args=()
-  local -- choice=''
+  local -- choice='' saved_temp=''
   while ((editing)); do
     editcmd_args=(editcmd)
     ((LINE_NUM <= 0)) || editcmd_args+=(-l "$LINE_NUM")
     editcmd_args+=("$TEMP_FILE")
 
     info 'Launching editor with syntax highlighting'
-    "${editcmd_args[@]}" || die $? "Editor invocation failed (exit code $?)"
+    editor_rc=0
+    "${editcmd_args[@]}" || editor_rc=$?
 
     # Jump to line only on first edit; subsequent re-edits start at top
     LINE_NUM=0
@@ -774,7 +842,7 @@ edit_file() {
     # Exit without saving if user made no changes (avoids spurious prompts)
     file_changed=0
     if ((file_existed)); then
-      if ! cmp -s "$ORIGINAL_BACKUP" "$TEMP_FILE"; then
+      if ! cmp -s -- "$ORIGINAL_BACKUP" "$TEMP_FILE"; then
         file_changed=1
       fi
     else
@@ -784,11 +852,24 @@ edit_file() {
       fi
     fi
 
+    if ((editor_rc)); then
+      # Editor failed: never silently discard work it may have written
+      if ((file_changed)); then
+        saved_temp="$TEMP_FILE"
+        TEMP_FILE=''
+        warn "Your edits are preserved in ${saved_temp@Q}"
+      fi
+      die 1 "Editor invocation failed (exit code $editor_rc)"
+    fi
+
     if ((!file_changed)); then
-      info "No changes made to '$filepath'"
-      rm -f "$TEMP_FILE" "$ORIGINAL_BACKUP"
-      TEMP_FILE='' ORIGINAL_BACKUP=''
-      return 0
+      if ((!file_existed)) && yn "Create empty file ${filepath@Q}?"; then
+        file_changed=1
+      else
+        info "No changes made to '$filepath'"
+        discard_temps
+        return 0
+      fi
     fi
 
     # Validate only if enabled and file was actually modified
@@ -803,7 +884,13 @@ edit_file() {
           '  [q] - Quit without saving'
 
         while ((1)); do
-          read -r -p "$SCRIPT_NAME: What would you like to do? [e/s/q]: " choice
+          if ! IFS= read -r -p "$SCRIPT_NAME: What would you like to do? [e/s/q]: " choice; then
+            # EOF (Ctrl-D): preserve edits rather than silently destroying them
+            >&2 echo ||:
+            saved_temp="$TEMP_FILE"
+            TEMP_FILE=''
+            die 1 "EOF at prompt; your edits are preserved in ${saved_temp@Q}"
+          fi
           case $choice in
             e|E)
               break  # Continue editing
@@ -815,12 +902,11 @@ edit_file() {
               ;;
             q|Q)
               vecho 'Quitting without saving.'
-              rm -f "$TEMP_FILE" "$ORIGINAL_BACKUP"
-              TEMP_FILE='' ORIGINAL_BACKUP=''
+              discard_temps
               return 0
               ;;
             *)
-              >&2 echo "Invalid choice. Please enter 'e', 's', or 'q'."
+              error "Invalid choice. Please enter 'e', 's', or 'q'."
               ;;
           esac
         done
@@ -830,46 +916,70 @@ edit_file() {
     fi
   done
 
+  # Lost-update protection: detect external modification since editing began
+  if ((file_existed)) && ! cmp -s -- "$ORIGINAL_BACKUP" "$filepath"; then
+    warn "${filepath@Q} was modified by another process while you were editing"
+    if ! yn 'Overwrite the external changes?'; then
+      saved_temp="$TEMP_FILE"
+      TEMP_FILE=''
+      [[ -z "$ORIGINAL_BACKUP" ]] || rm -f -- "$ORIGINAL_BACKUP"
+      ORIGINAL_BACKUP=''
+      die 1 "Not saved; your edits are preserved in ${saved_temp@Q}"
+    fi
+  fi
+
   # Atomic file replacement: either succeeds completely or leaves original intact
   mv -f -- "$TEMP_FILE" "$filepath" || die "$ERR_IO" "Failed to save ${filepath@Q}"
+  rm -f -- "${TEMP_FILE}~"  # editor backup of the temp (e.g. joe's file~)
   TEMP_FILE=''  # Prevent cleanup from removing the saved file
 
-  # Clean up backup file
+  # mktemp created the temp 0600 (and chmod u+w may have widened it): restore
+  # the original mode, or a umask-derived default for new files
+  if [[ -n "$orig_mode" ]]; then
+    chmod "$orig_mode" -- "$filepath" 2>/dev/null \
+      || warn "Could not restore mode $orig_mode on ${filepath@Q}"
+  else
+    local -- new_mode
+    new_mode=$(printf '%03o' $(( 0666 & ~0$(umask) )))
+    chmod "$new_mode" -- "$filepath" 2>/dev/null ||:
+  fi
+
   [[ -z "$ORIGINAL_BACKUP" ]] || rm -f -- "$ORIGINAL_BACKUP"
   ORIGINAL_BACKUP=''
 
   success "'$filepath' saved"
 }
 
-# --------------------------------------------------------------------------------
-# MAIN FUNCTION
-# --------------------------------------------------------------------------------
+# Main function
 
 main() {
-  # Parse command-line arguments
+  # Note: -n is --no-validate (long-documented interface), not BCS0806 dry-run
   while (($#)); do case $1 in
     -n|--no-validate)  VALIDATE=0 ;;
     -l|--line)         noarg "$@"; shift
                        [[ $1 =~ ^[0-9]+$ ]] || die "$ERR_INVAL" "Line number must be a non-negative integer: ${1@Q}"
-                       LINE_NUM=$1 ;;
+                       LINE_NUM=$((10#$1)) ;;  # 10# prevents octal surprise on leading zeros
     -s|--shellcheck)   SHELLCHECK=1 ;;
+    -v|--verbose)      VERBOSE=1 ;;
+    -q|--quiet)        VERBOSE=0 ;;
     -V|--version)      echo "$SCRIPT_NAME $VERSION"; exit 0 ;;
     -h|--help)         usage 0 ;;
     --)                shift; break ;;
-    -[nlsVh]?*)        set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue ;;
+    -[nlsvqVh]?*)      set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue ;;
     -*)                die "$ERR_INVAL" "Invalid option ${1@Q}" ;;
     *)                 [[ -z "$FILENAME" ]] || die "$ERR_USAGE" 'Multiple filenames specified'
                        FILENAME="$1" ;;
   esac; shift; done
 
-  # Remaining arg after -- is the filename
-  if [[ -z "$FILENAME" ]] && (($#)); then
+  # Remaining args after -- : exactly one filename, and only if none seen yet
+  if (($#)); then
+    [[ -z "$FILENAME" ]] || die "$ERR_USAGE" 'Multiple filenames specified'
     FILENAME="$1"
     shift
     (($# == 0)) || die "$ERR_USAGE" 'Multiple filenames specified'
   fi
 
-  readonly -- VALIDATE SHELLCHECK
+  readonly -- VALIDATE SHELLCHECK VERBOSE
 
   # Validate arguments
   [[ -n "$FILENAME" ]] || die "$ERR_USAGE" 'No filename specified'
@@ -885,7 +995,7 @@ main() {
       if [[ -n "$exec_path" ]]; then
         # Found in PATH - check if it's a text file
         if is_text_file "$exec_path"; then
-          if yn "Edit executable '$exec_path'?"; then
+          if yn "Edit executable ${exec_path@Q}?"; then
             FILENAME="$exec_path"
           else
             exit 0
@@ -896,27 +1006,26 @@ main() {
         fi
       else
         # Not found in PATH - offer to create
-        yn "Create '$FILENAME'?" || exit 0
+        yn "Create ${FILENAME@Q}?" || exit 0
       fi
     else
       # Contains path separator - just offer to create
-      yn "Create '$FILENAME'?" || exit 0
+      yn "Create ${FILENAME@Q}?" || exit 0
     fi
   fi
 
-  # Now resolve the filename path
-  FILENAME=$(realpath -- "$FILENAME")
+  # Resolve path; -m allows not-yet-existing components (created in edit_file)
+  FILENAME=$(realpath -m -- "$FILENAME") || die "$ERR_IO" "Cannot resolve path ${FILENAME@Q}"
   readonly -- FILENAME
 
   # Prevent editing the script itself while it's running
   if [[ "$FILENAME" == "$SCRIPT_PATH" ]]; then
-    die "$ERR_BUSY" 'Cannot edit the running script itself.' 'This could cause corruption during atomic file replacement.'
+    die "$ERR_BUSY" 'Cannot edit the running script itself.' \
+      'This could cause corruption during atomic file replacement.'
   fi
 
-  # Edit the file
   edit_file "$FILENAME"
 }
 
-# Call main with all arguments
 main "$@"
 #fin

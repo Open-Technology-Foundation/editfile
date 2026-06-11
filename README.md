@@ -178,6 +178,8 @@ editfile [OPTIONS] filename
 | `-n`, `--no-validate` | Skip syntax validation (faster for large files) |
 | `-l`, `--line LINE` | Jump to specified line number |
 | `-s`, `--shellcheck` | Run shellcheck on shell scripts (in addition to bash -n) |
+| `-v`, `--verbose` | Enable informational messages (default) |
+| `-q`, `--quiet` | Suppress informational messages |
 | `-V`, `--version` | Show version and exit |
 | `-h`, `--help` | Display help message |
 

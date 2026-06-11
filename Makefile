@@ -29,7 +29,7 @@ check:
 
 test:
 	@for t in tests/test_validation.sh tests/test_security.sh tests/test_validation_flow.sh; do \
-	  bash "$$t" || exit 1; \
+	  bash "$$t" </dev/null || exit 1; \
 	done
 
 help:
