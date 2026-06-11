@@ -63,3 +63,4 @@ Thumbs.db
 
 # Ignore from claude.init: '.gudang'
 .gudang
+.archive/
