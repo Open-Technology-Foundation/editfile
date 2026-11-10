@@ -1,6 +1,6 @@
 # editfile - Developer's Text Editor with Built-in Validation
 
-A terminal-based text editor wrapper that adds comprehensive syntax validation to your editing workflow. Built as a validation layer on top of the [filetype package](https://github.com/Open-Technology-Foundation/filetype), editfile provides automatic file type detection, syntax validation for 10+ languages/formats, and safe atomic file operations.
+A terminal-based text editor wrapper that adds comprehensive syntax validation to your editing workflow. Built as a validation layer on top of the [filetype package](https://github.com/Open-Technology-Foundation/filetype), editfile provides automatic file type detection, syntax validation for 10 file formats, and atomic saves.
 
 ## Table of Contents
 
@@ -24,25 +24,27 @@ A terminal-based text editor wrapper that adds comprehensive syntax validation t
 
 ### Core Capabilities
 - **Automatic Syntax Validation** - Built-in validators for JSON, YAML, XML, Python, Shell, PHP, HTML, INI, CSV, and TOML
-- **Intelligent File Type Detection** - Recognizes 46+ file types via extension, shebang, or content analysis
-- **Interactive Error Recovery** - When validation fails, choose to re-edit, force save, or quit
-- **Atomic File Operations** - Uses temporary files for safe editing; original never corrupted
-- **PATH Search** - Automatically finds and edits executables/scripts in your PATH
-- **Binary Protection** - Refuses to edit binary files to prevent corruption
-- **Line Positioning** - Jump directly to specific line numbers
-- **Shellcheck Integration** - Optional advanced shell script analysis (with `-s` flag)
+- **File Type Detection** - From the extension, the shebang line, or the content (via the filetype package)
+- **Interactive Error Recovery** - When validation fails, choose to re-edit, save anyway, or quit
+- **Atomic Saves** - You edit a working copy; the original is replaced in a single rename, and only when you save
+- **PATH Search** - Finds scripts on your PATH and offers to edit them
+- **Binary Protection** - Refuses to edit binary files
+- **Line Positioning** - Jump directly to a line number
+- **Shellcheck Integration** - Optional shell script analysis (with the `-s` flag)
 
 ### Editor Integration
-- **Syntax Highlighting** - Automatic syntax configuration for 46+ file types
-- **Multi-Editor Support** - Works with joe, nano, vim, emacs, VS Code
-- **Auto-Detection** - Finds available editors or uses `$EDITOR` environment variable
+- **Syntax Highlighting** - The editor is started with the syntax that matches the file type
+- **Multi-Editor Support** - Works with joe, nano, vim, emacs, VS Code, helix, micro, zed, or any other command in `$EDITOR`
+- **Editor Selection** - Uses `$EDITOR`; vim when it is not set
 
 ### Safety Features
-- Symlink resolution (edits actual file, not the link)
-- Permission checking (file and directory)
-- Self-edit protection (prevents corrupting the running script)
-- Change detection (skips validation if file unchanged)
-- Temporary file cleanup on exit/interrupt
+- Symlink resolution (edits the actual file, not the link)
+- Permission checking (read and write, file and directory)
+- Self-edit protection (refuses to edit the running script)
+- Change detection (an unchanged file is neither validated nor rewritten)
+- Lost-update guard (asks before overwriting a file that changed on disk while you were editing)
+- File mode preserved on save
+- Edits survive an interrupted or failed session: the working copy is kept and its path is reported
 
 ## How It Works
 
@@ -60,7 +62,7 @@ editfile is a validation wrapper built on the [filetype package](https://github.
 ┌─────────────────▼───────────────────────────┐
 │  filetype package (dependency)              │
 │  • editcmd - Editor launcher                │
-│  • filetype - Type detection (100+)          │
+│  • filetype - Type detection                │
 │  • Syntax highlighting configuration        │
 └─────────────────┬───────────────────────────┘
                   │ launches
@@ -72,30 +74,33 @@ editfile is a validation wrapper built on the [filetype package](https://github.
 
 ### Workflow
 
-1. **File Resolution** - Searches locally, then in PATH if not found
-2. **Binary Check** - Verifies file is text (using `file` command and null-byte detection)
-3. **Type Detection** - Identifies file type using filetype library (extension, shebang, or content)
-4. **Temporary Copy** - Creates temp file with preserved extension for proper syntax highlighting
-5. **Editor Launch** - Uses editcmd to open file with correct syntax highlighting
-6. **Change Detection** - Compares temp file with original to detect actual changes
-7. **Validation** - Runs appropriate validator based on file type (if enabled)
+1. **File Resolution** - Looks for the file as given; a bare name that does not exist is searched for in PATH
+2. **Binary Check** - Refuses anything that is not a regular text file (`file` character-set detection, then a NUL-byte check)
+3. **Type Detection** - Identifies the file type with the filetype library (extension, shebang, or content)
+4. **Working Copy** - Creates a hidden working copy beside the target, keeping the extension so highlighting works
+5. **Editor Launch** - Uses editcmd to open the working copy with the right syntax highlighting
+6. **Change Detection** - Compares the working copy with the original; no change means nothing is written
+7. **Validation** - Runs the validator for the file type (unless `-n` is given)
 8. **Interactive Handling** - On validation failure, prompts: [e]dit again, [s]ave anyway, or [q]uit
-9. **Atomic Replace** - Moves validated temp file to final location
+9. **Lost-Update Check** - Asks before overwriting if the target changed on disk in the meantime
+10. **Atomic Replace** - Renames the working copy over the target, with the original file mode
 
 ## Installation
 
 ### Quick Start
 
+editfile needs the [filetype package](https://github.com/Open-Technology-Foundation/filetype) (it provides `editcmd` and the type detection library). Install that first:
+
 ```bash
-git clone https://github.com/Open-Technology-Foundation/editfile.git && cd editfile && sudo make install-deps && sudo make install
+git clone https://github.com/Open-Technology-Foundation/filetype.git
+cd filetype && sudo make install && cd ..
 ```
 
-Or step-by-step:
+Then editfile:
 
 ```bash
 git clone https://github.com/Open-Technology-Foundation/editfile.git
 cd editfile
-sudo make install-deps   # Install filetype dependency
 sudo make install        # Install editfile and bash completion
 ```
 
@@ -105,10 +110,8 @@ sudo make install        # Install editfile and bash completion
 make                # Show help and available targets
 sudo make install   # Install editfile and bash completion
 sudo make uninstall # Remove editfile and bash completion
-make test           # Run test suite
-make check          # Run shellcheck on editfile
-make check-deps     # Check optional validators and python modules
-sudo make install-deps  # Install filetype package from GitHub
+make test           # Run the test suites
+make check          # Report whether editfile is on your PATH
 ```
 
 ### Custom Install Location
@@ -132,14 +135,15 @@ sudo apt install jq yamllint libxml2-utils shellcheck php-cli tidy
 # Fedora/RHEL/Rocky
 sudo dnf install jq yamllint libxml2 ShellCheck php-cli tidy
 
-# Python-based validators
-pip install PyYAML tomli  # For YAML and TOML validation
+# Python fallbacks (only needed when the tools above are missing)
+pip install PyYAML        # YAML without yamllint
+pip install tomli         # TOML on Python older than 3.11 (3.11+ has tomllib built in)
 
 # Check what's installed
-make check-deps
+type -P jq yamllint xmllint shellcheck php tidy python3
 ```
 
-**Note**: Missing validators generate warnings but don't prevent editing.
+**Note**: A missing validator produces a `Not validated: ...` warning that names what to install. It does not prevent editing or saving.
 
 ## Quick Start
 
@@ -176,7 +180,7 @@ editfile [OPTIONS] filename
 | Option | Description |
 |--------|-------------|
 | `-n`, `--no-validate` | Skip syntax validation (faster for large files) |
-| `-l`, `--line LINE` | Jump to specified line number |
+| `-l`, `--line LINE` | Jump to specified line number (`-l 42` or `-l42`) |
 | `-s`, `--shellcheck` | Run shellcheck on shell scripts (in addition to bash -n) |
 | `-v`, `--verbose` | Enable informational messages (default) |
 | `-q`, `--quiet` | Suppress informational messages |
@@ -217,13 +221,15 @@ editfile backup-script          # Edit from /usr/local/bin
 editfile cln                    # Edit custom command
 
 # When found in PATH, editfile prompts:
-# "Edit executable '/usr/local/bin/backup-script'? y/n"
+# "Edit executable '/usr/local/bin/backup-script'? [y/N]"
 ```
+
+Only a bare name is searched for; a name containing a `/` is always taken as a path. Answer `y` or `yes` and press Enter; anything else declines.
 
 #### Creating New Files
 ```bash
-editfile newfile.py             # Prompts: "Create 'newfile.py'? y/n"
-editfile config/app.yaml        # Creates directory if needed
+editfile newfile.py             # Prompts: "Create 'newfile.py'? [y/N]"
+editfile config/app.yaml        # Creates the directory if needed
 ```
 
 #### Configuration Files
@@ -254,32 +260,38 @@ done
 
 ### Validated File Types (with Syntax Checking)
 
-| Type | Extensions | Primary Validator | Fallback |
-|------|-----------|-------------------|----------|
-| JSON | .json, .jsonld, .jsonc | jq | python3 json.tool |
-| YAML | .yaml, .yml | yamllint | python3 PyYAML |
-| XML | .xml, .xsl, .xslt, .svg | xmllint | python3 xml.etree |
-| HTML | .html, .htm, .xhtml | tidy | (basic check) |
-| Python | .py, .pyw, .pyi | python3 -m py_compile | - |
-| Shell | .sh, .bash, .zsh, .ksh, shebang | bash -n | (+ optional shellcheck) |
-| PHP | .php, .phtml | php -l | - |
-| INI | .ini, .conf, .cfg | awk validation | - |
-| CSV | .csv, .tsv | awk column check | - |
-| TOML | .toml, .tml | python3 tomli/toml | - |
+| Type | Recognised by | Primary Validator | Fallback |
+|------|---------------|-------------------|----------|
+| JSON | .json | jq | python3 json.tool |
+| YAML | .yaml, .yml | yamllint (syntax and duplicate keys) | python3 PyYAML |
+| XML | .xml | xmllint | python3 xml.etree |
+| HTML | .html, .htm | tidy (errors fail, warnings are shown) | - |
+| Python | .py, python shebang | python3 `compile()` (nothing is executed or written) | - |
+| Shell | .sh, .bash, sh/bash shebang | bash -n (+ shellcheck advice with `-s`) | - |
+| PHP | .php, php shebang | php -l | - |
+| INI | .ini | awk (malformed section headers) | - |
+| CSV | .csv | python3 csv module (consistent column count) | awk |
+| TOML | .toml | python3 tomllib (3.11+) | tomli, toml |
 
-### Syntax Highlighted Only (40+ additional types)
+Type detection belongs to the filetype package, so the list above is exactly what it maps to these types. Related extensions such as `.jsonc`, `.jsonl`, `.xhtml`, `.zsh`, `.conf`, `.cfg` and `.tsv` are **not validated**.
 
-All files get syntax highlighting even without validators:
+A few plain-text formats are currently classified as binary by the filetype package and are refused (exit status 10): SVG images, armoured PGP keys, SubRip subtitles and other text whose MIME type is not `text/...`. Edit those with your editor directly.
 
-**Programming Languages**: JavaScript, TypeScript, C, C++, Java, Go, Rust, Ruby, Perl, Lua, TCL, Erlang, Elixir, Haskell, Lisp, OCaml, Scala, Swift, R
+When no validator for the type is installed, editfile says so (`Not validated: ...`) and saves the file unvalidated.
 
-**Markup/Config**: Markdown, LaTeX, reStructuredText, AsciiDoc, SQL, Nginx config, Apache config, systemd units
+### Syntax Highlighted Only
 
-**Data/Build**: Dockerfile, Makefile, CMake, Gradle, Maven, Terraform, Ansible
+Everything else the filetype package recognises is opened with syntax highlighting and saved without validation, for example:
 
-**Other**: Diff/Patch files, Git config, SSH config, and more
+**Programming Languages**: JavaScript, TypeScript, C, C++, Java, Kotlin, Go, Rust, Ruby, Perl, Lua, Tcl, Erlang, Elixir, Haskell, Lisp, OCaml, Scala, Swift, R, Zig
 
-See the [filetype package](https://github.com/Open-Technology-Foundation/filetype) for the complete list of 46+ supported types.
+**Markup/Config**: Markdown, TeX, SQL, CSS, conf files, Git config files
+
+**Data/Build**: Dockerfile, Makefile, CMake, Gradle, Terraform, Nix, protobuf
+
+**Other**: Diff/Patch files
+
+See the [filetype package](https://github.com/Open-Technology-Foundation/filetype) for the complete list.
 
 ## Validation Workflow
 
@@ -293,10 +305,12 @@ Edit file → Make changes → Save → Validation passes → File saved ✓
 Edit file → Make changes → Save → Validation fails ✗
 ↓
 editfile presents three options:
-  [e] Edit again   - Fix errors and retry (changes preserved in temp file)
-  [s] Save anyway  - Force save despite errors (not recommended)
+  [e] Edit again   - Fix errors and retry (your changes are still in the working copy)
+  [s] Save anyway  - Save despite the errors (not recommended)
   [q] Quit         - Discard changes and exit
 ```
+
+Closing the prompt (Ctrl-D) or interrupting it (Ctrl-C) is not an answer: nothing is saved, and the working copy with your edits is kept and its path reported.
 
 ### Example Session
 
@@ -306,39 +320,40 @@ $ editfile config.json
 editfile: ◉ Launching editor with syntax highlighting
 # (you edit and save the file with a syntax error)
 
-editfile: ◉ Validating json file 'config.json'
-parse error: Expected separator between values at line 5, column 12
+editfile: ◉ Validating json syntax
 editfile: ✗ Validation failed:
-
-Options:
-  [e] - Edit again
-  [s] - Save anyway (not recommended)
-  [q] - Quit without saving
+jq: parse error: Expected separator between values at line 1, column 22
+editfile: Options:
+editfile:   [e] - Edit again
+editfile:   [s] - Save anyway (not recommended)
+editfile:   [q] - Quit without saving
 editfile: What would you like to do? [e/s/q]: e
 
+editfile: ◉ Launching editor with syntax highlighting
 # (editor reopens with your changes still there)
 # (you fix the error and save)
 
-editfile: ◉ Validating json file 'config.json'
+editfile: ◉ Validating json syntax
 editfile: ✓ Validated
-editfile: ✓ 'config.json' saved
+editfile: ✓ '/home/you/project/config.json' saved
 ```
 
 ### Validator Priority
 
 Each file type uses the best available validator:
 
-1. **Specialized tools first** (jq, yamllint, xmllint, shellcheck)
-2. **Fallback to Python** (if specialized tool missing)
-3. **Warn if no validator** (but still allow editing)
+1. **Specialized tools first** (jq, yamllint, xmllint)
+2. **Fallback to Python** for JSON, YAML and XML (if the specialized tool is missing)
+3. **Warn if no validator** (`Not validated: ...`; the file is still saved)
 
 ## Editor Configuration
 
 ### Editor Selection Priority
 
 1. `$EDITOR` environment variable (if set)
-2. Auto-detection searches for: joe → nano → vim → vi → emacs
-3. Default fallback: vim
+2. Otherwise vim
+
+There is no auto-detection: if `$EDITOR` is not set and vim is not installed, set `$EDITOR`.
 
 ### Set Your Preferred Editor
 
@@ -348,28 +363,32 @@ export EDITOR=nano      # Use nano
 export EDITOR=vim       # Use vim
 export EDITOR=joe       # Use joe
 export EDITOR=emacs     # Use emacs
-export EDITOR=code      # Use VS Code (if installed)
+export EDITOR='code --wait'   # Use VS Code (the editor must wait, see below)
 ```
 
 ### Supported Editors
 
-- **joe** - Joe's Own Editor
-- **nano** - GNU nano
-- **vim** - Vi IMproved
-- **vi** - Classic vi
-- **emacs** - GNU Emacs
-- **VS Code** - Visual Studio Code (via `code` command)
+editcmd knows these editors by name and passes them the line number (`-l`) in their own syntax:
 
-All editors receive proper syntax highlighting configuration via editcmd.
+- **joe** (also `jstar`, `jj`), **nano**, **vim** (also `vi`, `nvim`), **emacs** - started with the syntax for the file type
+- **VS Code** (`code`), **helix** (`hx`), **micro**, **zed** - these detect the syntax themselves
+
+Any other value of `$EDITOR` is run as given, with the file name appended. It may contain options (`EDITOR='code --wait'`), and it gets neither `-l` nor a syntax setting.
+
+**The editor must not return until you have finished.** editfile reads the working copy when the editor command exits. An editor that hands the file to a background window and returns at once (`code`, `zed`, ...) looks like "no changes made"; give it its wait option, for example `EDITOR='code --wait'`.
+
+The editor runs with your own `PATH`, not the restricted one editfile uses for its validators.
+
+**Known limitation:** files recognised by their name and not by an extension (`Makefile`, `Dockerfile`, `.bashrc`, `.gitignore`) are opened as plain text. The editor is given the working copy, whose name is different.
 
 ## Dependencies
 
 ### Required
-- **bash 4.4+** - Shell interpreter
+- **bash 5.2+** - Shell interpreter
 - **filetype package** - Provides filetype and editcmd
   - Install: https://github.com/Open-Technology-Foundation/filetype
-- **Standard Unix tools** - grep, awk, file, od, cmp, readlink, mktemp
-- **Text editor** - At least one: vim, nano, joe, emacs, vi
+- **GNU coreutils and friends** - file, head, od, cmp, cp, mv, mktemp, stat, chmod, realpath, awk
+- **Text editor** - vim, or whatever `$EDITOR` names
 
 ### Optional Validators
 
@@ -379,9 +398,6 @@ Install these for enhanced validation (any combination works):
 ```bash
 # Ubuntu/Debian
 apt install jq yamllint libxml2-utils shellcheck php-cli tidy
-
-# macOS
-brew install jq yamllint libxml2 shellcheck php tidy-html5
 
 # Fedora/RHEL
 dnf install jq yamllint libxml2 ShellCheck php-cli tidy
@@ -395,18 +411,17 @@ apk add jq yamllint libxml2-utils shellcheck php tidy
 
 #### Python Validators
 ```bash
-# YAML support
+# YAML without yamllint
 pip install PyYAML
 
-# TOML support
-pip install tomli          # Python 3.11+
-pip install toml           # Older Python versions
+# TOML: Python 3.11+ needs nothing (tomllib is in the standard library)
+pip install tomli          # Python older than 3.11
 ```
 
 #### Validator Check
 ```bash
 # Check which validators are available
-command -v jq yamllint xmllint shellcheck php tidy python3
+type -P jq yamllint xmllint shellcheck php tidy python3
 ```
 
 ## Use Cases
@@ -415,10 +430,10 @@ command -v jq yamllint xmllint shellcheck php tidy python3
 Prevent broken config files from being deployed:
 
 ```bash
-editfile nginx.conf             # Catch nginx config errors
-editfile docker-compose.yml     # Validate Docker configs
+editfile docker-compose.yml     # YAML syntax and duplicate keys
 editfile .gitlab-ci.yml         # Check CI/CD syntax
-editfile terraform.tfvars       # Verify Terraform variables
+editfile pyproject.toml         # TOML syntax
+editfile settings.ini           # INI section headers
 ```
 
 ### 2. Script Development
@@ -452,27 +467,31 @@ editfile config.toml            # TOML syntax check
 ### 5. API/Web Development
 ```bash
 editfile api-spec.json          # OpenAPI/Swagger spec
-editfile schema.xml             # XML schema validation
+editfile schema.xml             # XML well-formedness
 editfile index.html             # HTML validation
 editfile endpoints.yaml         # API endpoint config
 ```
 
 ## Security
 
-editfile implements multiple security measures:
-
 ### Protection Mechanisms
-- **Command Injection Prevention** - All validators use safe argument passing (sys.argv[], not eval)
-- **Filename Sanitization** - Temporary filenames sanitized to prevent shell injection
-- **Binary File Protection** - Refuses to edit binary files (prevents corruption/exploitation)
-- **Path Resolution** - Uses canonical paths to prevent traversal attacks
-- **Self-Edit Protection** - Prevents editing the running script (avoids corruption during atomic replace)
-- **Null Byte Detection** - Multiple methods to detect binary content
+- **File names are data** - A file name is never evaluated as shell code or interpolated into a program; validators read the file on standard input
+- **Isolated Python helpers** - The Python-based checks run with `-I` or `-P`, so a `csv.py` or `json.py` in the directory you are standing in is not imported
+- **Restricted PATH for tools** - editfile finds its own tools and validators in `/usr/local/bin:/usr/bin:/bin` only; your editor still runs with your own PATH
+- **Working copy names** - The working copy's name is built from a sanitized form of the file name
+- **Binary File Protection** - Refuses files that are not regular text files
+- **Symlinks** - The target is resolved first, so the real file is edited; a working copy that has been replaced by a symlink is not installed
+- **Self-Edit Protection** - Refuses to edit the running script
+
+### Things To Know
+- **Do not run editfile as root in a directory other users can write to** (`/tmp`, a shared upload directory). The working copy lives beside the target, and a user who can write to that directory can interfere with it. Use `sudoedit` for that case.
+- A failed or interrupted session leaves a hidden working copy (`.name_XXXXXX.ext`) beside the target, on purpose: it holds your edits. Remove it once you have recovered them.
+- "Save anyway" writes a file that failed validation. Use it knowingly.
 
 ### Security Best Practices
-- Always validate configuration files before deployment
-- Use `-s` flag for shell scripts to catch common security issues via shellcheck
-- Review validation output carefully
+- Validate configuration files before deployment
+- Use the `-s` flag for shell scripts to get shellcheck's advice
+- Read the validation output; a `Not validated` warning means nothing was checked
 - Don't use `-n` (skip validation) for security-critical configs
 
 For detailed security information and testing, see [SECURITY.md](SECURITY.md).
@@ -490,17 +509,17 @@ For detailed security information and testing, see [SECURITY.md](SECURITY.md).
 # Install filetype package
 git clone https://github.com/Open-Technology-Foundation/filetype.git
 cd filetype
-sudo ./install.sh
+sudo make install
 
 # Verify installation
-command -v editcmd
+type -P editcmd
 ls -l /usr/local/bin/editcmd
 ls -l /usr/local/bin/filetype
 ```
 
-#### 2. "No validator available" Warning
+#### 2. "Not validated" Warning
 
-**Problem**: Validation tool not installed
+**Problem**: No validation tool for this file type is installed. The message names what to install, for example `Not validated: no JSON validator available (install jq or python3)`. The file is saved without being checked.
 
 **Solution**:
 ```bash
@@ -514,9 +533,9 @@ pip install PyYAML               # Python YAML fallback
 editfile -n file.yaml
 ```
 
-#### 3. Editor Not Opening / Wrong Editor
+#### 3. Editor Not Opening / Wrong Editor / "No changes made" Straight Away
 
-**Problem**: editfile can't find your preferred editor
+**Problem**: `$EDITOR` is not set (vim is used), or it names an editor that returns before you have finished (see [Supported Editors](#supported-editors))
 
 **Solution**:
 ```bash
@@ -547,12 +566,12 @@ editfile -n file.json           # No validation
 
 #### 5. Permission Denied
 
-**Problem**: No write access to file or directory
+**Problem**: No read or write access to the file, or no write access to its directory. The directory must be writable even for an existing file, because the working copy is created beside it and renamed over it.
 
 **Solution**:
 ```bash
-# For system files, use sudo
-sudo editfile /etc/hosts
+# For system files
+sudo editfile /etc/hosts        # sudo usually drops $EDITOR, so vim is used
 
 # For user files, check permissions
 ls -la file.txt
@@ -563,13 +582,16 @@ chmod u+w file.txt              # Add write permission
 
 **Problem**: editfile refuses to edit a text file it thinks is binary
 
+editfile refuses a file in two cases:
+
+1. `file` recognises no character set in it **and** there is a NUL byte in its first 4096 bytes. A file with a recognised character set (UTF-8, UTF-16, ISO-8859, ...) passes this test even though UTF-16 text is full of NUL bytes.
+2. The filetype package classifies it as a binary format (an image, an archive, a compiled program).
+
 **Diagnosis**:
 ```bash
-# Check file type
-file filename
-od -An -tx1 filename | head    # Look for null bytes (00)
-
-# If truly text, it may have null bytes - handle carefully
+file -b --mime-encoding filename         # "binary" means no character set was recognised
+head -c 4096 filename | od -An -tx1 | grep -c ' 00'   # Lines containing NUL bytes
+filetype filename                        # "binary" means the filetype package refuses it
 ```
 
 #### 7. PATH Search Not Working
@@ -579,8 +601,7 @@ od -An -tx1 filename | head    # Look for null bytes (00)
 **Debug**:
 ```bash
 # Check if file exists in PATH
-command -v scriptname
-which scriptname
+type -P scriptname
 
 # Check PATH variable
 echo "$PATH"
@@ -588,6 +609,8 @@ echo "$PATH"
 # Use absolute path instead
 editfile /usr/local/bin/scriptname
 ```
+
+The search applies only to a bare name that does not exist in the current directory, finds files only (not aliases, functions or builtins), and refuses binaries such as compiled programs.
 
 ### Debug Mode
 
@@ -597,9 +620,26 @@ bash -x editfile file.txt
 
 # Check validation manually
 jq empty file.json              # Test JSON
-yamllint file.yaml              # Test YAML
+yamllint -d '{rules: {key-duplicates: enable}}' file.yaml   # Test YAML the way editfile does
 bash -n script.sh               # Test shell script
 ```
+
+### Exit Status
+
+| Status | Meaning |
+|-------:|---------|
+| 0 | Saved, nothing to save, or you answered no to a question |
+| 1 | Not saved: the editor failed, you declined an overwrite, or the validation prompt got no answer |
+| 2 | Usage error |
+| 5 | I/O error (the directory or working copy could not be created, or the save failed) |
+| 10 | Not an editable text file (binary, directory, device) |
+| 13 | Permission denied |
+| 16 | Refused to edit the running script |
+| 18 | The filetype package is missing |
+| 22 | Invalid argument |
+| 129, 130, 143 | Ended by SIGHUP, SIGINT, SIGTERM |
+
+`editfile --help` has the full table.
 
 ### Getting Help
 
@@ -615,29 +655,29 @@ bash -n script.sh               # Test shell script
 ### Run Test Suite
 
 ```bash
-# Basic validation tests
-./tests/test_validation.sh
+make test                            # The regression suite
+./tests/test_regressions.sh C1 S7    # Selected cases, by ID
+EDIT_FILE=/path/to/copy ./tests/test_regressions.sh   # Test another copy of the program
 
-# Security tests
-./tests/test_security.sh
+make mutation                        # Do the tests notice a break? (slow)
 ```
 
 ### Test Coverage
 
-The validation test suite verifies:
-- ✓ JSON, YAML, Python, Shell script validation (valid & invalid files)
-- ✓ Editor detection and fallback
-- ✓ Command-line argument parsing
-- ✓ Temporary file naming and cleanup
-- ✓ Binary file detection
-- ✓ PATH search functionality
+`tests/test_regressions.sh` runs the real program with a scripted stand-in for the editor and checks outcomes: file content and mode, exit status, messages, and what is left on disk. It covers:
+- ✓ Every validator accepting a valid file and rejecting an invalid one
+- ✓ The [e]dit / [s]ave / [q]uit prompt, and prompts that are closed or interrupted
+- ✓ Signals (SIGINT, SIGTERM, SIGHUP) and editor failures: nothing saved, edits kept
+- ✓ Saving: unchanged files, modes and umask, symlinks, new directories, files changed or created by someone else, a failing rename
+- ✓ Binary detection, including files in other character sets that must stay editable
+- ✓ File and directory names containing shell or Python syntax, and Python modules planted in the working directory
+- ✓ PATH search, options, and the documented exit statuses
 
-The security test suite verifies:
-- ✓ Command injection prevention
-- ✓ Filename sanitization
-- ✓ Unicode and special character handling
-- ✓ Path traversal prevention
-- ✓ Validator security
+A case that needs a tool which is not installed is reported as skipped, not passed.
+
+### Mutation Check
+
+`tests/mutate.sh` (`make mutation`) tests the tests. It copies the program and the completion file to a private directory and runs the whole suite there once; a case that already fails stops the run, since it would credit every break routed to it. Then it breaks one behaviour at a time with `sed` (the mode no longer restored on save, `[q]` saving, a file name evaluated as shell code, …) and runs the cases that should notice. A break that no case notices is reported as `MISSED`; a `sed` that no longer matches the code is reported as `??` (change the program and the mutant that targets it must change too); a break whose cases were all skipped is `untested`. The status is 0 only when every break was caught.
 
 ### Manual Testing
 
@@ -647,16 +687,18 @@ echo '{"valid": "json"}' > test.json
 editfile test.json
 
 echo '{invalid json}' > bad.json
-editfile bad.json                # Should fail validation
+editfile bad.json                # Change something and save: validation fails
+                                 # (an unchanged file is not validated)
 
 # Test shellcheck integration
 echo '#!/bin/bash' > test.sh
 echo 'var=foo' >> test.sh
 echo 'echo $var' >> test.sh
-editfile -s test.sh              # Should warn about quoting
+editfile -s test.sh              # Change something and save: shellcheck warns about quoting
 
 # Test PATH search
-editfile bash                    # Should find /bin/bash
+editfile editcmd                 # Offers to edit the script found on PATH
+editfile bash                    # Found on PATH, refused: it is a binary
 ```
 
 ## Contributing
@@ -670,9 +712,8 @@ Contributions welcome! Please ensure:
    - Declare all variables with `declare` or `local`
 
 2. **Testing**
-   - Add tests for new validators
-   - Ensure existing tests pass: `./tests/test_validation.sh`
-   - Test security implications: `./tests/test_security.sh`
+   - Add tests for new validators and for every behaviour change
+   - Ensure all tests pass: `make test`
 
 3. **Documentation**
    - Update README.md for new features
@@ -681,26 +722,26 @@ Contributions welcome! Please ensure:
 
 ### Adding a New Validator
 
-1. Add file type detection in `detect_file_type()` function (or rely on sourced filetype library)
-2. Create `validate_<type>()` function following existing patterns
-3. Add case in `validate_file()` dispatcher
-4. Update the validators table in README.md
-5. Add test case in `tests/test_validation.sh`
+1. Find the type name the filetype library reports: `bash -c 'source "$(type -P filetype)" && filetype "$1"' _ yourfile` (the `filetype` command itself prints the name mapped for your editor, which can differ). Add a mapping in `detect_file_type()` only if you want a different name
+2. Create a `validate_<type>()` function: return 0 when the file is valid, 1 when it is not (diagnostics on stdout or stderr), and `ERR_NODEP` with a one-line message when there is no tool to check it with
+3. Add the type name to the list in `validate_file()`
+4. Update the validators table in README.md and the help text
+5. Add an accept/reject case in `tests/test_regressions.sh`
 
-Example:
+Feed the file on standard input where the tool allows it. That keeps the working copy's name out of the diagnostics, and file names out of the tool's argument parsing.
+
+Example (JavaScript, which the library reports as `js`):
 ```bash
-validate_rust() {
-  local -- filepath="$1"
+validate_js() {
+  local -- filepath=$1
 
-  if command -v rustc >/dev/null 2>&1; then
-    if ! rustc --crate-type lib --emit metadata "$filepath" 2>&1; then
-      return 1
-    fi
+  if command -v node &>/dev/null; then
+    node --check - < "$filepath" || return 1
     return 0
   fi
 
-  warn 'Rust compiler not available for validation'
-  return 0
+  echo 'no JavaScript validator available (install node)'
+  return "$ERR_NODEP"
 }
 ```
 

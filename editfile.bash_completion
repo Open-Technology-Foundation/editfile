@@ -2,27 +2,47 @@
 # Bash completion for editfile
 
 _editfile() {
-  local cur prev words cword
+  # The user's shell may have any IFS, and compgen -W splits the list on it
+  local -- IFS=$' \t\n'
+  local -- cur bare word
+  #shellcheck disable=SC2034  # set by _init_completion, not read here
+  local -- prev
+  local -a words
+  local -i cword want_number=0 options_ended=0 have_name=0
+  local -- opts='-n --no-validate -l --line -s --shellcheck -v --verbose -q --quiet'
+  opts+=' -V --version -h --help --'
   _init_completion || return
 
-  case $prev in
-    -l|--line)
-      return 0
-      ;;
-    -h|--help|-V|--version)
-      return 0
-      ;;
-  esac
+  # Read the words before this one as the program does: -l, alone or at the
+  # end of a bundle, takes the next word; after -- every word is a name.
+  # Words come as typed: quote characters are dropped (no eval, which would
+  # run any $(...) on the line). Patterns without letters, so that a user's
+  # nocasematch cannot take -v for -V
+  for word in "${words[@]:1:cword-1}"; do
+    word=${word//[\'\"\\]/}
+    if ((want_number)); then
+      want_number=0
+    elif ((options_ended)) || [[ $word != -* ]]; then
+      have_name=1
+    elif [[ $word == -- ]]; then
+      options_ended=1
+    else
+      case $word in
+        -l|--line|-[!-]*l) want_number=1 ;;
+        *) ;;
+      esac
+    fi
+  done
+  ((!want_number)) || return 0
 
-  case $cur in
-    -*)
-      COMPREPLY=( $(compgen -W "-n --no-validate -l --line -s --shellcheck -V --version -h --help --" -- "$cur") )
-      return 0
-      ;;
-  esac
+  bare=${cur//[\'\"\\]/}
+  if ((!options_ended)) && [[ $bare == -* ]]; then
+    mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$bare")
+    return 0
+  fi
 
-  # Complete with filenames
-  _filedir
+  # The program takes one file name
+  ((have_name)) || _filedir
 }
 
 complete -F _editfile editfile
